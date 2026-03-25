@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Read(//d/github/STM32F411_Frequency_counter/$USERPROFILE/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Middlewares/Third_Party/**)",
+      "Read(//c/Users/$USERNAME/STM32Cube/**)",
+      "Read(//d/github/STM32F411_Frequency_counter/$USERPROFILE/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Middlewares/Third_Party/FreeRTOS/Source/**)",
+      "Bash(ls:*)",
+      "Bash(REPO=\"$USERPROFILE/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Middlewares/Third_Party/FreeRTOS/Source\")",
+      "Bash(DEST=\"D:/github/STM32F411_Frequency_counter/Middlewares/Third_Party/FreeRTOS/Source\")",
+      "Bash(mkdir -p \"$DEST/include\" \"$DEST/portable/GCC/ARM_CM4F\" \"$DEST/portable/MemMang\")",
+      "Bash(cp \"$REPO/tasks.c\" \"$REPO/queue.c\" \"$REPO/list.c\" \"$REPO/timers.c\" \"$DEST/\")",
+      "Bash(cp \"$REPO/include/\"*.h \"$DEST/include/\")"
+    ]
+  }
+}

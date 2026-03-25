@@ -41,30 +41,40 @@ Signal input ──────────────── PA15
 | `0x10` | EDGE | 1 byte | Read/Write | Capture edge: `0` = rising, `1` = falling |
 | `0x11` | TIM_PSC | 2 bytes | Read/Write | Timer prescaler (0–65535) |
 | `0x13` | IC_PSC | 1 byte | Read/Write | Input capture prescaler (0–3) |
-| `0x20` | LED_PERIOD | 2 bytes | Read/Write | Status LED blink period in ms |
+| `0x14–0x1F` | *(reserved)* | 12 bytes | Read | Zero-filled |
+| `0x20` | LED_PERIOD | 2 bytes | Read/Write | Status LED (PC13) blink period in ms |
 | `0x22` | LED_DUTY | 1 byte | Read/Write | Status LED on-duty percentage (0–100) |
+| `0x23` | LED_G_PERIOD | 2 bytes | Read/Write | Green LED (PC14) blink period in ms |
+| `0x25` | LED_G_DUTY | 1 byte | Read/Write | Green LED on-duty percentage (0–100) |
+| `0x26` | LED_R_PERIOD | 2 bytes | Read/Write | Red LED (PB10) blink period in ms |
+| `0x28` | LED_R_DUTY | 1 byte | Read/Write | Red LED on-duty percentage (0–100) |
 | `0x30` | SAVE_CFG | 1 byte | Write only | Write `0x5A` to save config to flash |
+
+Registers are contiguous in a 41-byte map (0x00–0x28). **Burst reads** are supported — a single read can span multiple registers. The slave builds a snapshot and sends from the start address onward.
 
 ---
 
 ## I2C Transaction Protocol
 
-### Reading a Register
+### Reading Registers
 
-A register read is a two-step I2C transaction:
-
-1. **Write** the register address (1 byte)
-2. **Read** the data (1–4 bytes depending on register)
-
-```
-[START] [0x08 + W] [reg_addr] [STOP]
-[START] [0x08 + R] [data_0] [data_1] ... [data_n] [NACK] [STOP]
-```
-
-Or as a combined (repeated-start) transaction:
+A register read is a two-step I2C transaction using repeated start:
 
 ```
 [START] [0x08 + W] [reg_addr] [REPEATED START] [0x08 + R] [data...] [NACK] [STOP]
+```
+
+**Burst reads:** You can read multiple consecutive registers in a single transaction. For example, reading 16 bytes from address `0x00` returns PERIOD + FREQ + DUTY + PULSE all at once. The master NACKs the last byte and issues STOP to end.
+
+**Single register read (4 bytes):**
+```
+[START] [0x08+W] [0x04] [RS] [0x08+R] [b0] [b1] [b2] [b3 NACK] [STOP]
+                  ^FREQ                 └── 4 bytes of FREQ ──┘
+```
+
+**Burst read (16 bytes from 0x00):**
+```
+[START] [0x08+W] [0x00] [RS] [0x08+R] [PERIOD 4B] [FREQ 4B] [DUTY 4B] [PULSE 4B NACK] [STOP]
 ```
 
 ### Writing a Register
@@ -404,17 +414,67 @@ while True:
     time.sleep(0.5)
 ```
 
+### C# (Burst Read — Frequency + Duty)
+
+```csharp
+const byte ADDR = 0x08;
+
+// Write register address 0x04 (FREQ), then read 8 bytes (FREQ + DUTY)
+i2c.Write(ADDR, new byte[] { 0x04 });
+byte[] data = i2c.Read(ADDR, 8);
+
+uint freq = BitConverter.ToUInt32(data, 0);       // FREQ register
+uint dutyCenti = BitConverter.ToUInt32(data, 4);  // DUTY register
+double dutyPercent = dutyCenti / 100.0;
+
+Console.WriteLine($"Frequency: {freq} Hz, Duty: {dutyPercent:F2} %");
+```
+
+### C# (Burst Read — All Measurements)
+
+```csharp
+// Read all 4 measurement registers at once (16 bytes from 0x00)
+i2c.Write(ADDR, new byte[] { 0x00 });
+byte[] data = i2c.Read(ADDR, 16);
+
+uint period = BitConverter.ToUInt32(data, 0);     // PERIOD (ticks)
+uint freq   = BitConverter.ToUInt32(data, 4);     // FREQ (Hz)
+uint duty   = BitConverter.ToUInt32(data, 8);     // DUTY (0.01% units)
+uint pulse  = BitConverter.ToUInt32(data, 12);    // PULSE (ticks)
+
+double dutyPercent = duty / 100.0;
+double periodUs = period * 0.01;  // at 100 MHz, 1 tick = 10 ns = 0.01 us
+
+Console.WriteLine($"Freq: {freq} Hz");
+Console.WriteLine($"Duty: {dutyPercent:F2} %");
+Console.WriteLine($"Period: {periodUs:F2} us");
+Console.WriteLine($"Pulse: {pulse * 0.01:F2} us");
+```
+
 ---
 
 ## Common Operations
 
-### 1. Read All Measurements
+### 1. Read All Measurements (Burst Read)
+
+Read 16 bytes from register `0x00` in a single transaction:
 
 ```
-Read 0x00 (4 bytes) → PERIOD ticks
-Read 0x04 (4 bytes) → FREQ Hz
-Read 0x08 (4 bytes) → DUTY in 0.01%
-Read 0x0C (4 bytes) → PULSE ticks
+Write 0x00, then read 16 bytes →
+  bytes  0–3:  PERIOD (uint32, ticks)
+  bytes  4–7:  FREQ   (uint32, Hz)
+  bytes  8–11: DUTY   (uint32, 0.01% units)
+  bytes 12–15: PULSE  (uint32, ticks)
+```
+
+**Decoding (little-endian):**
+```
+Example raw: 9C 82 01 00  F2 03 00 00  87 13 00 00  45 C1 00 00
+
+PERIOD = 0x0001829C = 99,996 ticks
+FREQ   = 0x000003F2 = 1,010 Hz
+DUTY   = 0x00001387 = 4,999 → 49.99%
+PULSE  = 0x0000C145 = 49,477 ticks
 ```
 
 ### 2. Check for No Signal
@@ -459,18 +519,28 @@ Write 0x13, 0x03   → capture every 8th edge (DIV8)
 
 **Note:** With IC prescaler > 0, the FREQ value is still computed correctly by the firmware. The PERIOD and PULSE readings reflect the time between the *captured* edges (i.e., 8 periods apart for DIV8), but FREQ is divided accordingly.
 
-### 6. Configure the Status LED
+### 6. Configure LEDs
 
-```
-Write 0x20, [period_lo, period_hi]   → blink period in ms
-Write 0x22, duty_pct                 → on-duty percentage (0-100)
-```
+Three LEDs are independently configurable:
 
-Example: fast blink (200 ms period, 25% on):
+| LED | Period Register | Duty Register | Pin | Active |
+|-----|----------------|---------------|-----|--------|
+| Status | `0x20` (2B) | `0x22` (1B) | PC13 | Low |
+| Green | `0x23` (2B) | `0x25` (1B) | PC14 | High |
+| Red | `0x26` (2B) | `0x28` (1B) | PB10 | High |
+
+Example: fast blink on status LED (200 ms period, 25% on):
 
 ```
 Write 0x20, [0xC8, 0x00]   → 200 ms
 Write 0x22, 0x19            → 25%
+```
+
+Example: green LED steady on:
+
+```
+Write 0x23, [0x01, 0x00]   → 1 ms period
+Write 0x25, 0x64            → 100% duty
 ```
 
 ### 7. Save Configuration to Flash
@@ -481,17 +551,24 @@ To persist the current edge, prescaler, and LED settings across power cycles:
 Write 0x30, 0x5A   → trigger flash save
 ```
 
-Settings saved: EDGE, TIM_PSC, IC_PSC, LED_PERIOD, LED_DUTY.
+Settings saved: EDGE, TIM_PSC, IC_PSC, LED_PERIOD, LED_DUTY, LED_G_PERIOD, LED_G_DUTY, LED_R_PERIOD, LED_R_DUTY.
 
 ### 8. Read Back Current Configuration
 
+Single reads:
 ```
 Read 0x10 (1 byte) → EDGE
 Read 0x11 (2 bytes) → TIM_PSC
 Read 0x13 (1 byte) → IC_PSC
 Read 0x20 (2 bytes) → LED_PERIOD
 Read 0x22 (1 byte) → LED_DUTY
+Read 0x23 (2 bytes) → LED_G_PERIOD
+Read 0x25 (1 byte) → LED_G_DUTY
+Read 0x26 (2 bytes) → LED_R_PERIOD
+Read 0x28 (1 byte) → LED_R_DUTY
 ```
+
+Or burst read 9 bytes from `0x20` to get all LED config at once.
 
 ---
 

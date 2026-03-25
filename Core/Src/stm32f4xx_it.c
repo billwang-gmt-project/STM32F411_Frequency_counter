@@ -24,6 +24,8 @@
 /* USER CODE BEGIN Includes */
 #include "tim.h"
 #include "i2c.h"
+#include "FreeRTOS.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -140,9 +142,10 @@ void UsageFault_Handler(void)
   }
 }
 
-/**
-  * @brief This function handles System service call via SWI instruction.
-  */
+/* SVC_Handler -- provided by FreeRTOS port.c (vPortSVCHandler)
+ * After CubeMX regeneration, re-comment this handler to avoid linker conflict.
+ */
+#if 0
 void SVC_Handler(void)
 {
   /* USER CODE BEGIN SVCall_IRQn 0 */
@@ -152,6 +155,7 @@ void SVC_Handler(void)
 
   /* USER CODE END SVCall_IRQn 1 */
 }
+#endif
 
 /**
   * @brief This function handles Debug monitor.
@@ -166,9 +170,10 @@ void DebugMon_Handler(void)
   /* USER CODE END DebugMonitor_IRQn 1 */
 }
 
-/**
-  * @brief This function handles Pendable request for system service.
-  */
+/* PendSV_Handler -- provided by FreeRTOS port.c (xPortPendSVHandler)
+ * After CubeMX regeneration, re-comment this handler to avoid linker conflict.
+ */
+#if 0
 void PendSV_Handler(void)
 {
   /* USER CODE BEGIN PendSV_IRQn 0 */
@@ -178,6 +183,7 @@ void PendSV_Handler(void)
 
   /* USER CODE END PendSV_IRQn 1 */
 }
+#endif
 
 /**
   * @brief This function handles System tick timer.
@@ -189,7 +195,10 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
+  {
+    xPortSysTickHandler();
+  }
   /* USER CODE END SysTick_IRQn 1 */
 }
 

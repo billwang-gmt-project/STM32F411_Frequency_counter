@@ -25,6 +25,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include "FreeRTOS.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +51,34 @@
 /* Edge configuration values */
 #define EDGE_RISING      0
 #define EDGE_FALLING     1
+
+/* LEDs */
+#define LED_GPIO_PORT       GPIOC
+#define LED_GPIO_PIN        GPIO_PIN_13
+#define LED_G_GPIO_PORT     GPIOC
+#define LED_G_GPIO_PIN      GPIO_PIN_14
+#define LED_R_GPIO_PORT     GPIOB
+#define LED_R_GPIO_PIN      GPIO_PIN_10
+#define LED_DEFAULT_PERIOD  1000U
+#define LED_DEFAULT_DUTY    50U
+
+/* I2C registers - LED (active-low status LED on PC13) */
+#define REG_LED_PERIOD   0x20   /* R/W 2 bytes: LED blink period in ms */
+#define REG_LED_DUTY     0x22   /* R/W 1 byte:  LED on-duty 0-100% */
+/* I2C registers - LED_G (PC14) */
+#define REG_LED_G_PERIOD 0x23   /* R/W 2 bytes: LED_G blink period in ms */
+#define REG_LED_G_DUTY   0x25   /* R/W 1 byte:  LED_G on-duty 0-100% */
+/* I2C registers - LED_R (PB10) */
+#define REG_LED_R_PERIOD 0x26   /* R/W 2 bytes: LED_R blink period in ms */
+#define REG_LED_R_DUTY   0x28   /* R/W 1 byte:  LED_R on-duty 0-100% */
+/* I2C registers - config */
+#define REG_SAVE_CFG     0x30   /* W   1 byte:  write 0x5A to save config */
+#define SAVE_CFG_KEY     0x5A
+
+/* Flash config storage - Sector 7 (last 128KB sector of STM32F411CE) */
+#define CONFIG_FLASH_SECTOR   FLASH_SECTOR_7
+#define CONFIG_FLASH_ADDR     0x08060000UL
+#define CONFIG_MAGIC          0xDEADBEEFUL
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,13 +102,35 @@ static uint8_t  g_ic_psc = 0;           /* 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 */
 /* I2C register protocol state */
 static uint8_t i2c_reg_addr = 0xFF;
 static uint8_t i2c_rx_buf[3];           /* reg addr + up to 2 data bytes */
-static uint8_t i2c_tx_buf[4];
+static uint8_t i2c_tx_buf[41];         /* full register map for burst reads (0x00-0x28) */
+
+/* LED parameters (written by I2C, read by LedTask) */
+static uint16_t g_led_period_ms = LED_DEFAULT_PERIOD;
+static uint8_t  g_led_duty_pct = LED_DEFAULT_DUTY;
+static uint16_t g_led_g_period_ms = LED_DEFAULT_PERIOD;
+static uint8_t  g_led_g_duty_pct = LED_DEFAULT_DUTY;
+static uint16_t g_led_r_period_ms = LED_DEFAULT_PERIOD;
+static uint8_t  g_led_r_duty_pct = LED_DEFAULT_DUTY;
+
+/* FreeRTOS */
+#define LED_TASK_STACK_SIZE      256  /* words = 1024 bytes */
+#define MONITOR_TASK_STACK_SIZE  256  /* words = 1024 bytes */
+static TaskHandle_t hLedTask = NULL;
+static TaskHandle_t hMonitorTask = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void FreqCounter_Reconfigure(void);
+static void LED_Init(void);
+static void LED_G_Init(void);
+static void LED_R_Init(void);
+static void Config_Load(void);
+static void Config_Save(void);
+static void LedTask(void *pvParameters);
+static void MonitorTask(void *pvParameters);
+static uint8_t I2C_BuildTxBuffer(uint8_t start_reg);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -118,6 +170,11 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  LED_Init();
+  LED_G_Init();
+  LED_R_Init();
+  Config_Load();
+
   HAL_NVIC_SetPriority(TIM2_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(TIM2_IRQn);
 
@@ -129,6 +186,19 @@ int main(void)
   HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_2);
   HAL_I2C_EnableListen_IT(&hi2c1);
+
+  /* Apply loaded config if non-default */
+  if (g_edge_config != EDGE_RISING || g_tim_psc != 0 || g_ic_psc != 0)
+  {
+    FreqCounter_Reconfigure();
+  }
+
+  /* Create FreeRTOS tasks */
+  xTaskCreate(LedTask, "LED", LED_TASK_STACK_SIZE, NULL, 1, &hLedTask);
+  xTaskCreate(MonitorTask, "MON", MONITOR_TASK_STACK_SIZE, NULL, 1, &hMonitorTask);
+
+  /* Start scheduler — does not return */
+  vTaskStartScheduler();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -138,13 +208,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (HAL_GetTick() - g_last_capture_tick > FREQ_TIMEOUT_MS)
-    {
-      g_period_ticks = 0;
-      g_frequency_hz = 0;
-      g_duty_centipct = 0;
-      g_pulse_ticks = 0;
-    }
+    /* Unreachable — scheduler is running */
   }
   /* USER CODE END 3 */
 }
@@ -196,6 +260,201 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/* --- FreeRTOS Hooks --- */
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  (void)xTask;
+  (void)pcTaskName;
+  for (;;);
+}
+
+/* --- LED GPIO Init --- */
+
+static void LED_Init(void)
+{
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = LED_GPIO_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED_GPIO_PORT, &gpio);
+  HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_SET); /* off (active-low) */
+}
+
+static void LED_G_Init(void)
+{
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = LED_G_GPIO_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED_G_GPIO_PORT, &gpio);
+  HAL_GPIO_WritePin(LED_G_GPIO_PORT, LED_G_GPIO_PIN, GPIO_PIN_RESET); /* off */
+}
+
+static void LED_R_Init(void)
+{
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = LED_R_GPIO_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED_R_GPIO_PORT, &gpio);
+  HAL_GPIO_WritePin(LED_R_GPIO_PORT, LED_R_GPIO_PIN, GPIO_PIN_RESET); /* off */
+}
+
+/* --- FreeRTOS Tasks --- */
+
+static void LedTask(void *pvParameters)
+{
+  (void)pvParameters;
+  TickType_t now = xTaskGetTickCount();
+  uint8_t led_on = 0, led_g_on = 0, led_r_on = 0;
+  TickType_t led_next = now, led_g_next = now, led_r_next = now;
+
+  for (;;)
+  {
+    now = xTaskGetTickCount();
+
+    /* Status LED (PC13, active-low) */
+    if ((int32_t)(now - led_next) >= 0)
+    {
+      uint32_t on_time = (uint32_t)g_led_period_ms * g_led_duty_pct / 100;
+      uint32_t off_time = g_led_period_ms - on_time;
+      if (led_on) {
+        HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_SET);
+        led_on = 0;
+        led_next = now + off_time;
+      } else {
+        HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_RESET);
+        led_on = 1;
+        led_next = now + on_time;
+      }
+    }
+
+    /* Green LED (PC14, active-high) */
+    if ((int32_t)(now - led_g_next) >= 0)
+    {
+      uint32_t on_time = (uint32_t)g_led_g_period_ms * g_led_g_duty_pct / 100;
+      uint32_t off_time = g_led_g_period_ms - on_time;
+      if (led_g_on) {
+        HAL_GPIO_WritePin(LED_G_GPIO_PORT, LED_G_GPIO_PIN, GPIO_PIN_RESET);
+        led_g_on = 0;
+        led_g_next = now + off_time;
+      } else {
+        HAL_GPIO_WritePin(LED_G_GPIO_PORT, LED_G_GPIO_PIN, GPIO_PIN_SET);
+        led_g_on = 1;
+        led_g_next = now + on_time;
+      }
+    }
+
+    /* Red LED (PB10, active-high) */
+    if ((int32_t)(now - led_r_next) >= 0)
+    {
+      uint32_t on_time = (uint32_t)g_led_r_period_ms * g_led_r_duty_pct / 100;
+      uint32_t off_time = g_led_r_period_ms - on_time;
+      if (led_r_on) {
+        HAL_GPIO_WritePin(LED_R_GPIO_PORT, LED_R_GPIO_PIN, GPIO_PIN_RESET);
+        led_r_on = 0;
+        led_r_next = now + off_time;
+      } else {
+        HAL_GPIO_WritePin(LED_R_GPIO_PORT, LED_R_GPIO_PIN, GPIO_PIN_SET);
+        led_r_on = 1;
+        led_r_next = now + on_time;
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+static void MonitorTask(void *pvParameters)
+{
+  (void)pvParameters;
+
+  for (;;)
+  {
+    if (HAL_GetTick() - g_last_capture_tick > FREQ_TIMEOUT_MS)
+    {
+      g_period_ticks = 0;
+      g_frequency_hz = 0;
+      g_duty_centipct = 0;
+      g_pulse_ticks = 0;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
+/* --- Flash Config Storage --- */
+
+typedef struct {
+  uint32_t magic;
+  uint8_t  edge_config;
+  uint16_t tim_psc;
+  uint8_t  ic_psc;
+  uint16_t led_period_ms;
+  uint8_t  led_duty_pct;
+  uint16_t led_g_period_ms;
+  uint8_t  led_g_duty_pct;
+  uint16_t led_r_period_ms;
+  uint8_t  led_r_duty_pct;
+} ConfigData_t;
+
+static void Config_Load(void)
+{
+  const ConfigData_t *cfg = (const ConfigData_t *)CONFIG_FLASH_ADDR;
+  if (cfg->magic != CONFIG_MAGIC) return;
+
+  g_edge_config     = cfg->edge_config <= EDGE_FALLING ? cfg->edge_config : EDGE_RISING;
+  g_tim_psc         = cfg->tim_psc;
+  g_ic_psc          = cfg->ic_psc <= 3 ? cfg->ic_psc : 0;
+  g_led_period_ms   = cfg->led_period_ms > 0 ? cfg->led_period_ms : LED_DEFAULT_PERIOD;
+  g_led_duty_pct    = cfg->led_duty_pct <= 100 ? cfg->led_duty_pct : LED_DEFAULT_DUTY;
+  g_led_g_period_ms = cfg->led_g_period_ms > 0 ? cfg->led_g_period_ms : LED_DEFAULT_PERIOD;
+  g_led_g_duty_pct  = cfg->led_g_duty_pct <= 100 ? cfg->led_g_duty_pct : LED_DEFAULT_DUTY;
+  g_led_r_period_ms = cfg->led_r_period_ms > 0 ? cfg->led_r_period_ms : LED_DEFAULT_PERIOD;
+  g_led_r_duty_pct  = cfg->led_r_duty_pct <= 100 ? cfg->led_r_duty_pct : LED_DEFAULT_DUTY;
+}
+
+static void Config_Save(void)
+{
+  ConfigData_t cfg;
+  cfg.magic           = CONFIG_MAGIC;
+  cfg.edge_config     = g_edge_config;
+  cfg.tim_psc         = g_tim_psc;
+  cfg.ic_psc          = g_ic_psc;
+  cfg.led_period_ms   = g_led_period_ms;
+  cfg.led_duty_pct    = g_led_duty_pct;
+  cfg.led_g_period_ms = g_led_g_period_ms;
+  cfg.led_g_duty_pct  = g_led_g_duty_pct;
+  cfg.led_r_period_ms = g_led_r_period_ms;
+  cfg.led_r_duty_pct  = g_led_r_duty_pct;
+
+  HAL_FLASH_Unlock();
+
+  FLASH_EraseInitTypeDef erase = {0};
+  erase.TypeErase = FLASH_TYPEERASE_SECTORS;
+  erase.Sector = CONFIG_FLASH_SECTOR;
+  erase.NbSectors = 1;
+  erase.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+  uint32_t error = 0;
+  HAL_FLASHEx_Erase(&erase, &error);
+
+  uint32_t *src = (uint32_t *)&cfg;
+  uint32_t addr = CONFIG_FLASH_ADDR;
+  for (uint32_t i = 0; i < sizeof(ConfigData_t) / 4; i++)
+  {
+    HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, src[i]);
+    addr += 4;
+  }
+
+  HAL_FLASH_Lock();
+}
 
 /* --- Full timer reconfiguration (edge, prescalers) --- */
 
@@ -280,44 +539,63 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 
 /* --- I2C Slave Register Protocol --- */
 
+#define REG_MAP_END  0x29  /* one past last register byte (LED_R_DUTY at 0x28) */
+
+static uint8_t I2C_BuildTxBuffer(uint8_t start_reg)
+{
+  /* Build a contiguous register-map image in i2c_tx_buf.
+   * Returns the number of bytes available from start_reg onward.
+   * Master can read as many bytes as it wants in a burst. */
+  memset(i2c_tx_buf, 0, sizeof(i2c_tx_buf));
+
+  /* 0x00-0x0F: measurement registers (4 bytes each) */
+  uint32_t period = g_period_ticks;
+  uint32_t freq   = g_frequency_hz;
+  uint32_t duty   = g_duty_centipct;
+  uint32_t pulse  = g_pulse_ticks;
+  memcpy(&i2c_tx_buf[0x00], &period, 4);
+  memcpy(&i2c_tx_buf[0x04], &freq, 4);
+  memcpy(&i2c_tx_buf[0x08], &duty, 4);
+  memcpy(&i2c_tx_buf[0x0C], &pulse, 4);
+
+  /* 0x10-0x13: capture config */
+  i2c_tx_buf[0x10] = g_edge_config;
+  memcpy(&i2c_tx_buf[0x11], &g_tim_psc, 2);
+  i2c_tx_buf[0x13] = g_ic_psc;
+
+  /* 0x14-0x1F: reserved (zeroed by memset) */
+
+  /* 0x20-0x28: LED config */
+  memcpy(&i2c_tx_buf[0x20], &g_led_period_ms, 2);
+  i2c_tx_buf[0x22] = g_led_duty_pct;
+  memcpy(&i2c_tx_buf[0x23], &g_led_g_period_ms, 2);
+  i2c_tx_buf[0x25] = g_led_g_duty_pct;
+  memcpy(&i2c_tx_buf[0x26], &g_led_r_period_ms, 2);
+  i2c_tx_buf[0x28] = g_led_r_duty_pct;
+
+  if (start_reg >= REG_MAP_END) return 1; /* fallback: send 1 zero byte */
+  return REG_MAP_END - start_reg;
+}
+
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
                            uint16_t AddrMatchCode)
 {
   if (hi2c->Instance != I2C1) return;
 
-  if (TransferDirection == I2C_DIRECTION_RECEIVE)
+  if (TransferDirection == I2C_DIRECTION_TRANSMIT)
   {
     /* Master is writing: receive reg addr + up to 2 data bytes */
     HAL_I2C_Slave_Seq_Receive_IT(hi2c, i2c_rx_buf, 3, I2C_FIRST_FRAME);
   }
-  else /* I2C_DIRECTION_TRANSMIT */
+  else /* I2C_DIRECTION_RECEIVE — master is reading */
   {
-    /* Master is reading: respond based on selected register */
-    uint32_t val = 0;
-    uint8_t tx_len = 4;
+    /* Capture register address from the write phase (may not have triggered RxCplt) */
+    i2c_reg_addr = i2c_rx_buf[0];
 
-    switch (i2c_reg_addr)
-    {
-    case REG_PERIOD: val = g_period_ticks; break;
-    case REG_FREQ:   val = g_frequency_hz; break;
-    case REG_DUTY:   val = g_duty_centipct; break;
-    case REG_PULSE:  val = g_pulse_ticks; break;
-    case REG_EDGE:
-      i2c_tx_buf[0] = g_edge_config;
-      HAL_I2C_Slave_Seq_Transmit_IT(hi2c, i2c_tx_buf, 1, I2C_LAST_FRAME);
-      return;
-    case REG_TIM_PSC:
-      memcpy(i2c_tx_buf, &g_tim_psc, 2);
-      HAL_I2C_Slave_Seq_Transmit_IT(hi2c, i2c_tx_buf, 2, I2C_LAST_FRAME);
-      return;
-    case REG_IC_PSC:
-      i2c_tx_buf[0] = g_ic_psc;
-      HAL_I2C_Slave_Seq_Transmit_IT(hi2c, i2c_tx_buf, 1, I2C_LAST_FRAME);
-      return;
-    default: break;
-    }
-    memcpy(i2c_tx_buf, &val, 4);
-    HAL_I2C_Slave_Seq_Transmit_IT(hi2c, i2c_tx_buf, tx_len, I2C_LAST_FRAME);
+    /* Build register map snapshot from selected register onward */
+    uint8_t len = I2C_BuildTxBuffer(i2c_reg_addr);
+    HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &i2c_tx_buf[i2c_reg_addr < REG_MAP_END ? i2c_reg_addr : 0],
+                                   len, I2C_LAST_FRAME);
   }
 }
 
@@ -354,6 +632,39 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
       g_ic_psc = i2c_rx_buf[1];
       need_reconfig = 1;
     }
+    break;
+  case REG_LED_PERIOD:
+  {
+    uint16_t new_period;
+    memcpy(&new_period, &i2c_rx_buf[1], 2);
+    if (new_period > 0) g_led_period_ms = new_period;
+    break;
+  }
+  case REG_LED_DUTY:
+    if (i2c_rx_buf[1] <= 100) g_led_duty_pct = i2c_rx_buf[1];
+    break;
+  case REG_LED_G_PERIOD:
+  {
+    uint16_t new_period;
+    memcpy(&new_period, &i2c_rx_buf[1], 2);
+    if (new_period > 0) g_led_g_period_ms = new_period;
+    break;
+  }
+  case REG_LED_G_DUTY:
+    if (i2c_rx_buf[1] <= 100) g_led_g_duty_pct = i2c_rx_buf[1];
+    break;
+  case REG_LED_R_PERIOD:
+  {
+    uint16_t new_period;
+    memcpy(&new_period, &i2c_rx_buf[1], 2);
+    if (new_period > 0) g_led_r_period_ms = new_period;
+    break;
+  }
+  case REG_LED_R_DUTY:
+    if (i2c_rx_buf[1] <= 100) g_led_r_duty_pct = i2c_rx_buf[1];
+    break;
+  case REG_SAVE_CFG:
+    if (i2c_rx_buf[1] == SAVE_CFG_KEY) Config_Save();
     break;
   default:
     break;

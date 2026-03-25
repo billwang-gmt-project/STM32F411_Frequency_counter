@@ -1,6 +1,6 @@
 # STM32F411 Frequency Counter
 
-A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. A host MCU reads measurements over I2C.
+A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. A host MCU reads measurements and configures settings over I2C. All configuration is persistable to flash. Runs on FreeRTOS.
 
 ## Hardware
 
@@ -9,6 +9,9 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 | PA15 | Signal input (TIM2_CH1) |
 | PB7 | I2C1 SDA |
 | PB8 | I2C1 SCL |
+| PC13 | Status LED (active-low, blinks at 1 Hz default) |
+| PC14 | Green LED (active-high, configurable blink) |
+| PB10 | Red LED (active-high, configurable blink) |
 
 - MCU: STM32F411CEUx, 100 MHz (HSI + PLL)
 - TIM2 timer clock: 100 MHz (default prescaler = 0)
@@ -31,18 +34,32 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 | 0x10 | EDGE | 1 byte | Read/Write | Capture edge: 0 = rising (default), 1 = falling |
 | 0x11 | TIM_PSC | 2 bytes | Read/Write | Timer prescaler, 0-65535 (default: 0) |
 | 0x13 | IC_PSC | 1 byte | Read/Write | Input capture prescaler: 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 |
+| 0x14–0x1F | *(reserved)* | 12 bytes | Read | Zero-filled |
+| 0x20 | LED_PERIOD | 2 bytes | Read/Write | Status LED (PC13) blink period in ms (default: 1000) |
+| 0x22 | LED_DUTY | 1 byte | Read/Write | Status LED on-duty in % 0-100 (default: 50) |
+| 0x23 | LED_G_PERIOD | 2 bytes | Read/Write | Green LED (PC14) blink period in ms (default: 1000) |
+| 0x25 | LED_G_DUTY | 1 byte | Read/Write | Green LED on-duty in % 0-100 (default: 50) |
+| 0x26 | LED_R_PERIOD | 2 bytes | Read/Write | Red LED (PB10) blink period in ms (default: 1000) |
+| 0x28 | LED_R_DUTY | 1 byte | Read/Write | Red LED on-duty in % 0-100 (default: 50) |
+| 0x30 | SAVE_CFG | 1 byte | Write | Write 0x5A to save all config to flash |
 
 All multi-byte values are **little-endian** (native ARM byte order).
 
 Timer clock = 100,000,000 / (TIM_PSC + 1). With default TIM_PSC=0, each tick = 10 ns.
 
-### Reading a Register
+### Persistent Configuration
 
-Write the register address, then read the data bytes:
+All writable registers (EDGE, TIM_PSC, IC_PSC, LED_PERIOD, LED_DUTY, LED_G_PERIOD, LED_G_DUTY, LED_R_PERIOD, LED_R_DUTY) can be saved to internal flash by writing `0x5A` to the SAVE_CFG register. Saved settings are automatically restored on power-up. Configuration is stored in flash sector 7 (0x08060000) with a magic number for validation.
+
+### Reading Registers
+
+Write the register address, then read the data bytes. Burst reads are supported — you can read multiple consecutive registers in a single transaction:
 
 ```
-START → 0x08 W → [reg_addr] → RESTART → 0x08 R → [data bytes...] → STOP
+START → 0x08 W → [reg_addr] → RESTART → 0x08 R → [data bytes...] → NACK → STOP
 ```
+
+For example, reading 16 bytes from address 0x00 returns PERIOD + FREQ + DUTY + PULSE in one transaction. Registers 0x14–0x1F are reserved (read as zero).
 
 ### Writing a Register
 
@@ -125,6 +142,21 @@ print(f"Frequency: {freq} Hz, Duty: {duty/100:.2f}%")
 write_reg8(0x10, 1)
 ```
 
+**C# (burst read — frequency + duty):**
+```csharp
+const byte ADDR = 0x08;
+
+// Write register address 0x04 (FREQ), then read 8 bytes (FREQ + DUTY)
+i2c.Write(ADDR, new byte[] { 0x04 });
+byte[] data = i2c.Read(ADDR, 8);
+
+uint freq = BitConverter.ToUInt32(data, 0);       // FREQ register
+uint dutyCenti = BitConverter.ToUInt32(data, 4);  // DUTY register
+double dutyPercent = dutyCenti / 100.0;
+
+Console.WriteLine($"Frequency: {freq} Hz, Duty: {dutyPercent:F2} %");
+```
+
 ## Measurement Specifications
 
 | Parameter | Value |
@@ -142,11 +174,22 @@ For very high frequency signals where resolution is sufficient, increase TIM_PSC
 
 The IC prescaler captures every Nth edge (DIV1/2/4/8), useful for reducing interrupt load on high-frequency signals.
 
+## Software Architecture
+
+The firmware runs on **FreeRTOS** (v10.3.1, native API) with two application tasks:
+
+| Task | Purpose |
+|------|---------|
+| LedTask | Manages blinking of all 3 LEDs with configurable period and duty cycle |
+| MonitorTask | Detects signal loss (1s timeout) and zeros measurement registers |
+
+ISR callbacks (TIM2 input capture, I2C slave protocol) run at high NVIC priority and do not use any FreeRTOS API — they update shared volatile globals directly.
+
 ## Building
 
 Requires **STM32CubeIDE**. Import the project and build the Debug or Release configuration.
 
-The CubeMX configuration file is `Frequency_Counter.ioc`. Regenerating code from CubeMX is safe — all custom logic is inside `/* USER CODE BEGIN/END */` sections.
+The CubeMX configuration file is `Frequency_Counter.ioc`. After regenerating code from CubeMX, re-apply FreeRTOS handler changes in `stm32f4xx_it.c` (see CLAUDE.md for details).
 
 ## License
 

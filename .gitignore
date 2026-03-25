@@ -1,0 +1,12 @@
+# Build output
+Debug/
+Release/
+
+# STM32CubeIDE settings
+.settings/
+*.launch
+
+# Eclipse metadata (optional - uncomment if you don't want to share IDE config)
+# .cproject
+# .project
+# .mxproject

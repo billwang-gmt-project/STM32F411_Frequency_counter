@@ -51,9 +51,8 @@ void HardFault_Handler(void);
 void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
-void SVC_Handler(void);
+/* SVC_Handler, PendSV_Handler -- provided by FreeRTOS port.c */
 void DebugMon_Handler(void);
-void PendSV_Handler(void);
 void SysTick_Handler(void);
 /* USER CODE BEGIN EFP */
 void TIM2_IRQHandler(void);

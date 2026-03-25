@@ -57,6 +57,7 @@
 #define REG_EDGE         0x10   /* R/W 1 byte:  0=rising, 1=falling */
 #define REG_TIM_PSC      0x11   /* R/W 2 bytes: timer prescaler (0-65535) */
 #define REG_IC_PSC       0x13   /* R/W 1 byte:  IC prescaler (0-3) */
+#define REG_CAPTURE_CTRL 0x14   /* R/W 1 byte:  0=disabled, 1=enabled */
 
 /* Edge configuration values */
 #define EDGE_RISING      0
@@ -115,7 +116,7 @@
 /* Flash config storage - Sector 7 (last 128KB sector of STM32F411CE) */
 #define CONFIG_FLASH_SECTOR   FLASH_SECTOR_7
 #define CONFIG_FLASH_ADDR     0x08060000UL
-#define CONFIG_MAGIC          0xDEADBEF3UL
+#define CONFIG_MAGIC          0xDEADBEF4UL
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -135,6 +136,7 @@ volatile uint32_t g_last_capture_tick = 0;
 uint8_t  g_edge_config = EDGE_RISING;
 uint16_t g_tim_psc = 0;
 uint8_t  g_ic_psc = 0;           /* 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 */
+uint8_t  g_capture_enabled = 1;  /* 0=stopped, 1=running */
 
 /* I2C register protocol state */
 static uint8_t i2c_reg_addr = 0xFF;
@@ -271,8 +273,11 @@ int main(void)
   HAL_NVIC_SetPriority(I2C1_ER_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
 
-  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_2);
+  if (g_capture_enabled)
+  {
+    HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+    HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_2);
+  }
   HAL_I2C_EnableListen_IT(&hi2c1);
 
   /* Apply loaded config if non-default */
@@ -637,7 +642,8 @@ static void MonitorTask(void *pvParameters)
 
   for (;;)
   {
-    if (HAL_GetTick() - g_last_capture_tick > FREQ_TIMEOUT_MS)
+    if (!g_capture_enabled ||
+        HAL_GetTick() - g_last_capture_tick > FREQ_TIMEOUT_MS)
     {
       g_period_ticks = 0;
       g_frequency_hz = 0;
@@ -655,6 +661,7 @@ typedef struct {
   uint8_t  edge_config;
   uint16_t tim_psc;
   uint8_t  ic_psc;
+  uint8_t  capture_enabled;
   uint16_t led_period_ms;
   uint8_t  led_duty_pct;
   uint16_t led_g_period_ms;
@@ -681,6 +688,7 @@ static void Config_Load(void)
   g_edge_config     = cfg->edge_config <= EDGE_FALLING ? cfg->edge_config : EDGE_RISING;
   g_tim_psc         = cfg->tim_psc;
   g_ic_psc          = cfg->ic_psc <= 3 ? cfg->ic_psc : 0;
+  g_capture_enabled = cfg->capture_enabled <= 1 ? cfg->capture_enabled : 1;
   g_led_period_ms   = cfg->led_period_ms > 0 ? cfg->led_period_ms : LED_DEFAULT_PERIOD;
   g_led_duty_pct    = cfg->led_duty_pct <= 100 ? cfg->led_duty_pct : LED_DEFAULT_DUTY;
   g_led_g_period_ms = cfg->led_g_period_ms > 0 ? cfg->led_g_period_ms : LED_DEFAULT_PERIOD;
@@ -708,6 +716,7 @@ void Config_Save(void)
   cfg.edge_config     = g_edge_config;
   cfg.tim_psc         = g_tim_psc;
   cfg.ic_psc          = g_ic_psc;
+  cfg.capture_enabled = g_capture_enabled;
   cfg.led_period_ms   = g_led_period_ms;
   cfg.led_duty_pct    = g_led_duty_pct;
   cfg.led_g_period_ms = g_led_g_period_ms;
@@ -795,14 +804,18 @@ void FreqCounter_Reconfigure(void)
   HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC2, TIM_CHANNEL_2);
   HAL_TIM_SlaveConfigSynchro(&htim2, &sSlaveConfig);
 
-  /* Clear measurements and restart */
+  /* Clear measurements */
   g_period_ticks = 0;
   g_frequency_hz = 0;
   g_duty_centipct = 0;
   g_pulse_ticks = 0;
 
-  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_2);
+  /* Only restart capture if enabled */
+  if (g_capture_enabled)
+  {
+    HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+    HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_2);
+  }
 }
 
 /* --- TIM2 Input Capture (PWM Input mode) --- */
@@ -851,8 +864,9 @@ static uint8_t I2C_BuildTxBuffer(uint8_t start_reg)
   i2c_tx_buf[0x10] = g_edge_config;
   memcpy(&i2c_tx_buf[0x11], &g_tim_psc, 2);
   i2c_tx_buf[0x13] = g_ic_psc;
+  i2c_tx_buf[0x14] = g_capture_enabled;
 
-  /* 0x14-0x1F: reserved (zeroed by memset) */
+  /* 0x15-0x1F: reserved (zeroed by memset) */
 
   /* 0x20-0x28: LED config */
   memcpy(&i2c_tx_buf[0x20], &g_led_period_ms, 2);
@@ -940,6 +954,13 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
     if (i2c_rx_buf[1] <= 3 && i2c_rx_buf[1] != g_ic_psc)
     {
       g_ic_psc = i2c_rx_buf[1];
+      need_reconfig = 1;
+    }
+    break;
+  case REG_CAPTURE_CTRL:
+    if (i2c_rx_buf[1] <= 1 && i2c_rx_buf[1] != g_capture_enabled)
+    {
+      g_capture_enabled = i2c_rx_buf[1];
       need_reconfig = 1;
     }
     break;

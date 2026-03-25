@@ -23,6 +23,7 @@
 #define REG_EDGE         0x10
 #define REG_TIM_PSC      0x11
 #define REG_IC_PSC       0x13
+#define REG_CAPTURE_CTRL 0x14
 
 #define EDGE_RISING      0
 #define EDGE_FALLING     1
@@ -67,6 +68,7 @@ extern volatile uint32_t g_pulse_ticks;
 extern uint8_t  g_edge_config;
 extern uint16_t g_tim_psc;
 extern uint8_t  g_ic_psc;
+extern uint8_t  g_capture_enabled;
 
 /* LED configuration */
 extern uint16_t g_led_period_ms;
@@ -138,8 +140,9 @@ uint8_t RegMap_BuildSnapshot(uint8_t start_reg, uint8_t *buf, uint8_t buf_size)
   map[0x10] = g_edge_config;
   memcpy(&map[0x11], &g_tim_psc, 2);
   map[0x13] = g_ic_psc;
+  map[0x14] = g_capture_enabled;
 
-  /* 0x14-0x1F: reserved (zeroed by memset) */
+  /* 0x15-0x1F: reserved (zeroed by memset) */
 
   /* 0x20-0x28: LED config */
   memcpy(&map[0x20], &g_led_period_ms,   2);
@@ -218,6 +221,15 @@ uint8_t RegMap_Write(uint8_t reg_addr, const uint8_t *data, uint8_t data_len)
     if (data[0] != g_ic_psc)
     {
       g_ic_psc = data[0];
+      FreqCounter_Reconfigure();
+    }
+    break;
+
+  case REG_CAPTURE_CTRL:
+    if (data[0] > 1) return 2;
+    if (data[0] != g_capture_enabled)
+    {
+      g_capture_enabled = data[0];
       FreqCounter_Reconfigure();
     }
     break;

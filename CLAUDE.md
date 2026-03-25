@@ -88,7 +88,8 @@ Both interfaces share the register map through `regmap.c` with FreeRTOS mutex pr
 | 0x10 | EDGE | 1B | R/W | Capture edge (0=rising, 1=falling) |
 | 0x11 | TIM_PSC | 2B | R/W | Timer prescaler (0-65535) |
 | 0x13 | IC_PSC | 1B | R/W | IC prescaler (0=DIV1..3=DIV8) |
-| 0x14-0x1F | (reserved) | 12B | — | Zero-filled gap |
+| 0x14 | CAPTURE_CTRL | 1B | R/W | Capture enable (0=off, 1=on, default: 1) |
+| 0x15-0x1F | (reserved) | 11B | — | Zero-filled gap |
 | 0x20 | LED_PERIOD | 2B | R/W | Status LED blink period in ms (default: 1000) |
 | 0x22 | LED_DUTY | 1B | R/W | Status LED on-duty 0-100% (default: 50) |
 | 0x23 | LED_G_PERIOD | 2B | R/W | Green LED blink period in ms (default: 1000) |
@@ -179,7 +180,7 @@ After CubeMX regeneration, these changes outside USER CODE blocks must be re-app
 - `PWM_ComputeParams()` auto-selects optimal prescaler to maximize ARR (duty resolution) for target frequency
 - `Trigger_Pulse()` outputs a configurable-width pulse on PA7 when PWM parameters are applied via CTRL register write
 - PWM timer handles (`htim1_pwm`, `htim4_pwm`) and all PWM logic are `static` in `main.c` — no external references needed
-- CONFIG_MAGIC changed to `0xDEADBEF3` when clock changed from 100MHz to 96MHz for USB — old config auto-resets to defaults
+- CONFIG_MAGIC bumped to `0xDEADBEF4` when capture_ctrl register added (previously `0xDEADBEF3` for 96MHz clock change) — old config auto-resets to defaults
 - USB composite device uses I-CUBE-USBD-Composite architecture pattern (https://github.com/alambe94/I-CUBE-USBD-Composite)
 - `regmap.c` is the shared register access layer — I2C, CDC, and HID all go through `RegMap_BuildSnapshot()` / `RegMap_Write()`
 - FreeRTOS mutex protects concurrent register writes from CDC/HID tasks; I2C ISR bypasses mutex (above FreeRTOS threshold, self-serializing)

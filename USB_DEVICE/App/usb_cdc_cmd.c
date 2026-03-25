@@ -25,6 +25,7 @@
 #define REG_EDGE         0x10
 #define REG_TIM_PSC      0x11
 #define REG_IC_PSC       0x13
+#define REG_CAPTURE_CTRL 0x14
 
 #define REG_LED_PERIOD   0x20
 #define REG_LED_DUTY     0x22
@@ -165,12 +166,24 @@ static uint16_t cmd_edge(uint8_t *resp, uint16_t max)
                               snap[0] ? "falling" : "rising");
 }
 
+static uint16_t cmd_capture(uint8_t *resp, uint16_t max)
+{
+    uint8_t snap[1];
+    RegMap_Lock();
+    RegMap_BuildSnapshot(REG_CAPTURE_CTRL, snap, 1);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "Capture: %s\r\n",
+                              snap[0] ? "on" : "off");
+}
+
 static uint16_t cmd_status(uint8_t *resp, uint16_t max)
 {
     /* Read first 16 bytes: PERIOD(4) + FREQ(4) + DUTY(4) + PULSE(4) */
     uint8_t snap[16];
+    uint8_t cap_snap[1];
     RegMap_Lock();
     RegMap_BuildSnapshot(REG_PERIOD, snap, 16);
+    RegMap_BuildSnapshot(REG_CAPTURE_CTRL, cap_snap, 1);
     RegMap_Unlock();
 
     uint32_t period = read_u32(&snap[0]);
@@ -182,10 +195,12 @@ static uint16_t cmd_status(uint8_t *resp, uint16_t max)
     uint32_t d_frac  = duty % 100;
 
     return (uint16_t)snprintf((char *)resp, max,
+        "Capture: %s\r\n"
         "Frequency: %lu Hz\r\n"
         "Duty: %lu.%02lu%%\r\n"
         "Period: %lu ticks\r\n"
         "Pulse: %lu ticks\r\n",
+        cap_snap[0] ? "on" : "off",
         (unsigned long)freq,
         (unsigned long)d_whole, (unsigned long)d_frac,
         (unsigned long)period,
@@ -240,6 +255,27 @@ static uint16_t cmd_set_ic_psc(const char *arg, uint8_t *resp, uint16_t max)
     RegMap_Unlock();
     return (uint16_t)snprintf((char *)resp, max, "IC PSC: %lu\r\n",
                               (unsigned long)val);
+}
+
+static uint16_t cmd_set_capture(const char *arg, uint8_t *resp, uint16_t max)
+{
+    uint8_t v;
+    if (match_prefix(arg, "on") && (arg[2] == '\0' || arg[2] == ' '))
+        v = 1;
+    else if (match_prefix(arg, "off") && (arg[3] == '\0' || arg[3] == ' '))
+        v = 0;
+    else {
+        unsigned long val = strtoul(arg, NULL, 0);
+        if (val > 1)
+            return (uint16_t)snprintf((char *)resp, max,
+                "Error: capture must be on/off or 0/1\r\n");
+        v = (uint8_t)val;
+    }
+    RegMap_Lock();
+    RegMap_Write(REG_CAPTURE_CTRL, &v, 1);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "Capture: %s\r\n",
+                              v ? "on" : "off");
 }
 
 static uint16_t cmd_set_trig_width(const char *arg, uint8_t *resp, uint16_t max)
@@ -376,7 +412,9 @@ static const char HELP_TEXT[] =
     "  pulse                   - Read pulse width (ticks)\r\n"
     "  status                  - Read all measurements\r\n"
     "  edge                    - Read capture edge\r\n"
+    "  capture                 - Read capture state (on/off)\r\n"
     "  set edge <0|1>          - Set capture edge (0=rising, 1=falling)\r\n"
+    "  set capture <on|off>    - Enable/disable input capture\r\n"
     "  set tim_psc <0-65535>   - Set timer prescaler\r\n"
     "  set ic_psc <0-3>        - Set input capture prescaler\r\n"
     "  set pwm1 freq <hz>      - Stage PWM1 frequency\r\n"
@@ -440,6 +478,10 @@ static uint16_t parse_line(const char *line, uint8_t *resp, uint16_t max)
         (line[4] == '\0' || line[4] == ' '))
         return cmd_edge(resp, max);
 
+    if (match_prefix(line, "capture") &&
+        (line[7] == '\0' || line[7] == ' '))
+        return cmd_capture(resp, max);
+
     /* ---- save ---- */
 
     if (match_prefix(line, "save") &&
@@ -482,6 +524,11 @@ static uint16_t parse_line(const char *line, uint8_t *resp, uint16_t max)
         sub = match_prefix(p, "ic_psc ");
         if (sub)
             return cmd_set_ic_psc(skip_spaces(sub), resp, max);
+
+        /* set capture */
+        sub = match_prefix(p, "capture ");
+        if (sub)
+            return cmd_set_capture(skip_spaces(sub), resp, max);
 
         /* set trig_width */
         sub = match_prefix(p, "trig_width ");

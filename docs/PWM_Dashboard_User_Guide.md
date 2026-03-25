@@ -55,7 +55,7 @@ The board has two PWM outputs and one capture input:
 │  Captured Measurements                                       │
 │    Freq: 1000 Hz              Duty: 50.00%                   │
 │    Period: 96000 ticks        Pulse: 48000 ticks             │
-│  [✓ Auto-refresh]  Interval: [500 ms ▾]  [Refresh Now]      │
+│  [Capture: ON] │ [✓ Auto-refresh]  Interval: [500 ms ▾]  [Refresh Now] │
 ├──────────────────────────────────────────────────────────────┤
 │  CDC Console                                                 │
 │  TX: [________________________] [Send]                       │
@@ -124,7 +124,14 @@ The board has two PWM outputs and one capture input:
 4. Observe the measurements update to match PWM2 settings.
 5. Both PWM channels are fully independent -- you can enable/disable them separately.
 
-### 6. Adjusting Measurement Refresh
+### 6. Enabling / Disabling Capture
+
+The **Capture: ON / OFF** button in the measurements panel controls whether the board is actively measuring the input signal on PA15.
+
+- Click the button to toggle capture on or off. When off, all measurements read zero.
+- The button state syncs from the device on each status refresh — if another interface (I2C, HID, or CDC console) changes the capture state, the button updates automatically.
+
+### 7. Adjusting Measurement Refresh
 
 - **Auto-refresh** is enabled by default. The dashboard sends the `status` command periodically.
 - Change the **Interval** dropdown to adjust refresh rate: `100`, `200`, `500`, `1000`, or `2000` ms.
@@ -133,7 +140,7 @@ The board has two PWM outputs and one capture input:
 - Uncheck **Auto-refresh** to stop automatic polling.
 - Click **Refresh Now** at any time for a one-shot measurement update.
 
-### 7. Using the CDC Console
+### 8. Using the CDC Console
 
 The console at the bottom shows all serial traffic and allows sending raw commands.
 
@@ -145,6 +152,8 @@ The console at the bottom shows all serial traffic and allows sending raw comman
 help              -- show all available commands
 freq              -- read frequency only
 duty              -- read duty cycle only
+set capture off   -- disable input capture
+set capture on    -- enable input capture
 set edge 1        -- switch to falling edge capture
 set tim_psc 95    -- set timer prescaler to 95 (1 MHz tick rate)
 set ic_psc 2      -- set input capture prescaler to DIV4
@@ -211,7 +220,7 @@ These are restored automatically the next time you launch the dashboard.
 |---------|-------|-----|
 | No COM port in dropdown | Board not connected or driver missing | Reconnect USB, click **Refresh**. On Windows, check Device Manager for the COM port. |
 | "Connected" but no measurements | No wire between PWM output and PA15 | Connect PA8 or PB6 to PA15 with a jumper wire |
-| Measurements show 0 Hz | PWM not enabled, or wire disconnected | Click **Enable** in the PWM panel, check jumper wire |
+| Measurements show 0 Hz | PWM not enabled, capture off, or wire disconnected | Check **Capture: ON** button, click **Enable** in the PWM panel, check jumper wire |
 | Frequency reads wrong value | Timer prescaler changed | Send `set tim_psc 0` in the console to reset prescaler |
 | Duty reads wrong at high freq | Limited timer resolution at high frequency | Expected -- fewer ticks per period reduces duty accuracy |
 | `[DISCONNECTED]` in console | USB cable unplugged or board reset | Reconnect USB, click **Connect** again |
@@ -221,12 +230,14 @@ These are restored automatically the next time you launch the dashboard.
 
 | Command | Description |
 |---------|-------------|
-| `status` | Read all measurements (freq, duty, period, pulse) |
+| `status` | Read all measurements (capture state, freq, duty, period, pulse) |
 | `freq` | Read frequency only |
 | `duty` | Read duty cycle only |
 | `set pwmN freq <hz>` | Stage PWM frequency (N = 1 or 2) |
 | `set pwmN duty <0-10000>` | Stage PWM duty in 0.01% units |
 | `set pwmN enable <0\|1>` | Apply staged config and enable/disable |
+| `capture` | Read capture state (on/off) |
+| `set capture <on\|off>` | Enable or disable input capture |
 | `set edge <0\|1>` | Set capture edge (0 = rising, 1 = falling) |
 | `set tim_psc <0-65535>` | Set timer prescaler |
 | `set ic_psc <0-3>` | Set input capture prescaler |

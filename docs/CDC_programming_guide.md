@@ -36,11 +36,13 @@ All commands are case-insensitive. Leading whitespace is ignored. Empty lines ar
 | `period` | `Period: <n> ticks` | `Period: 96000 ticks` |
 | `pulse` | `Pulse: <n> ticks` | `Pulse: 48000 ticks` |
 | `edge` | `Edge: rising` or `Edge: falling` | `Edge: rising` |
-| `status` | All four measurements at once | See below |
+| `capture` | `Capture: on` or `Capture: off` | `Capture: on` |
+| `status` | Capture state + all four measurements | See below |
 | `help` | Full command listing | |
 
 **`status` response example:**
 ```
+Capture: on
 Frequency: 1000 Hz
 Duty: 50.00%
 Period: 96000 ticks
@@ -51,6 +53,7 @@ Pulse: 48000 ticks
 
 | Command | Range | Description |
 |---------|-------|-------------|
+| `set capture <on\|off>` | on or off (also 0/1) | Enable/disable input capture |
 | `set edge <0\|1>` | 0 = rising, 1 = falling | Capture edge selection |
 | `set tim_psc <n>` | 0 -- 65535 | Timer prescaler (divides 96 MHz clock) |
 | `set ic_psc <n>` | 0 -- 3 | Input capture prescaler (0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8) |
@@ -147,7 +150,7 @@ print(ser.readline().decode())   # "Frequency: 1000 Hz\r\n"
 
 # Read all measurements
 ser.write(b'status\r\n')
-for _ in range(5):               # echo + 4 data lines
+for _ in range(6):               # echo + 5 data lines
     line = ser.readline().decode().strip()
     if line:
         print(line)
@@ -217,6 +220,10 @@ With default `tim_psc = 0`:
 - **Pulse width in seconds** = `pulse_ticks / 96,000,000`
 
 If `tim_psc` is set to N, divide the clock by (N+1).
+
+### IC Prescaler Effect
+
+When `ic_psc > 0`, the hardware captures every N-th edge (N = 1, 2, 4, or 8). The `freq` and `duty` responses are **automatically compensated** — they always report the true single-cycle values. The `period` and `pulse` tick values span N signal cycles; to get single-cycle values, divide by N (where N = 2^ic_psc).
 
 ## Data Flow Overview
 

@@ -50,6 +50,7 @@ RE_PERIOD = re.compile(r"Period:\s*(\d+)\s*ticks")
 RE_PULSE = re.compile(r"Pulse:\s*(\d+)\s*ticks")
 
 RE_STATUS_BLOCK = re.compile(
+    r"Capture:\s*(?P<capture>on|off)\r?\n"
     r"Frequency:\s*(?P<freq>\d+)\s*Hz\r?\n"
     r"Duty:\s*(?P<duty_w>\d+)\.(?P<duty_f>\d+)%\r?\n"
     r"Period:\s*(?P<period>\d+)\s*ticks\r?\n"
@@ -73,6 +74,7 @@ class ResponseParser:
         if not last_match:
             return None, -1
         result = {
+            "capture_on": last_match.group("capture") == "on",
             "freq_hz": int(last_match.group("freq")),
             "duty_pct": int(last_match.group("duty_w"))
             + int(last_match.group("duty_f")) / 100.0,
@@ -413,6 +415,7 @@ class PwmDashboardApp(tk.Tk):
         self._auto_refresh = tk.BooleanVar(value=True)
         self._refresh_interval = tk.StringVar(value="500")
         self._refresh_after_id = None
+        self._capture_on = True  # mirrors device state
 
         self._build_fonts()
         self._build_ui()
@@ -578,6 +581,16 @@ class PwmDashboardApp(tk.Tk):
         ctrl_frame = ttk.Frame(frame)
         ctrl_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=(0, 4))
 
+        self._capture_btn = ttk.Button(
+            ctrl_frame, text="Capture: ON", width=14,
+            command=self._toggle_capture,
+        )
+        self._capture_btn.pack(side="left", padx=4)
+
+        ttk.Separator(ctrl_frame, orient="vertical").pack(
+            side="left", fill="y", padx=6, pady=2
+        )
+
         ttk.Checkbutton(
             ctrl_frame, text="Auto-refresh", variable=self._auto_refresh,
             command=self._schedule_refresh,
@@ -725,6 +738,10 @@ class PwmDashboardApp(tk.Tk):
             self._pulse_label.configure(
                 text=f"Pulse: {result['pulse_ticks']} ticks"
             )
+            # sync capture state from device
+            if result["capture_on"] != self._capture_on:
+                self._capture_on = result["capture_on"]
+                self._update_capture_ui()
             # consume all parsed data up to the last match
             self._rx_buffer = self._rx_buffer[end:]
 
@@ -758,11 +775,24 @@ class PwmDashboardApp(tk.Tk):
         if self._serial.is_connected():
             self._send_cmd("status\n")
 
+    def _toggle_capture(self):
+        new_state = not self._capture_on
+        cmd = "set capture on\n" if new_state else "set capture off\n"
+        self._send_cmd(cmd)
+        self._capture_on = new_state
+        self._update_capture_ui()
+
+    def _update_capture_ui(self):
+        text = "Capture: ON" if self._capture_on else "Capture: OFF"
+        self._capture_btn.configure(text=text)
+
     # -- enable/disable controls --
 
     def _set_controls_enabled(self, enabled):
         self._pwm1_panel.set_controls_enabled(enabled)
         self._pwm2_panel.set_controls_enabled(enabled)
+        state = "!disabled" if enabled else "disabled"
+        self._capture_btn.state([state])
 
     # -- settings persistence --
 

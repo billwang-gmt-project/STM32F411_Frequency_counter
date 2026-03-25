@@ -47,7 +47,8 @@ Trigger output ───────────── PA7  (pulse on PWM change
 | `0x10` | EDGE | 1 byte | Read/Write | Capture edge: `0` = rising, `1` = falling |
 | `0x11` | TIM_PSC | 2 bytes | Read/Write | Timer prescaler (0–65535) |
 | `0x13` | IC_PSC | 1 byte | Read/Write | Input capture prescaler (0–3) |
-| `0x14–0x1F` | *(reserved)* | 12 bytes | Read | Zero-filled |
+| `0x14` | CAPTURE_CTRL | 1 byte | Read/Write | Capture enable: `0` = off, `1` = on (default: 1) |
+| `0x15–0x1F` | *(reserved)* | 11 bytes | Read | Zero-filled |
 | `0x20` | LED_PERIOD | 2 bytes | Read/Write | Status LED (PC13) blink period in ms |
 | `0x22` | LED_DUTY | 1 byte | Read/Write | Status LED on-duty percentage (0–100) |
 | `0x23` | LED_G_PERIOD | 2 bytes | Read/Write | Green LED (PC14) blink period in ms |
@@ -124,9 +125,11 @@ Default `TIM_PSC = 0` → timer clock = 96 MHz → tick resolution ≈ 10.4 ns.
 | Value | Formula | Example |
 |-------|---------|---------|
 | **Frequency** | `FREQ` register gives Hz directly | `FREQ = 1000` → 1 kHz |
-| **Period (seconds)** | `PERIOD / timer_clock` | `PERIOD = 100000, PSC = 0` → 1 ms |
+| **Period (seconds)** | `PERIOD / timer_clock / ic_div` | `PERIOD = 100000, PSC = 0, IC_PSC = 0` → 1 ms |
 | **Duty cycle (%)** | `DUTY / 100.0` | `DUTY = 5000` → 50.00% |
 | **Pulse width (seconds)** | `PULSE / timer_clock` | `PULSE = 50000, PSC = 0` → 500 µs |
+
+`ic_div` = 1, 2, 4, or 8 depending on IC_PSC. FREQ and DUTY are automatically compensated by the firmware — no host-side correction needed. PERIOD and PULSE are raw tick counts that span `ic_div` signal cycles when IC_PSC > 0.
 
 ### IC Prescaler Values
 
@@ -609,7 +612,23 @@ To revert to rising edge:
 Write 0x10, 0x00   → capture on rising edge
 ```
 
-### 4. Measure Low Frequencies (< 1 Hz)
+### 4. Disable / Enable Capture
+
+Disable input capture (all measurements read zero, TIM2 interrupts stop):
+
+```
+Write 0x14, 0x00   → capture off
+```
+
+Re-enable capture:
+
+```
+Write 0x14, 0x01   → capture on
+```
+
+Configuration changes (edge, prescalers) made while capture is disabled take effect when re-enabled.
+
+### 5. Measure Low Frequencies (< 1 Hz)
 
 Increase the timer prescaler to extend the 32-bit counter range:
 
@@ -623,7 +642,7 @@ Example: PSC = 95 (timer clock = 1 MHz, max period = 4294 seconds)
 Write 0x11, [0x5F, 0x00]
 ```
 
-### 5. Measure High Frequencies (> 1 MHz)
+### 6. Measure High Frequencies (> 1 MHz)
 
 Use the IC prescaler to reduce interrupt rate:
 
@@ -631,9 +650,9 @@ Use the IC prescaler to reduce interrupt rate:
 Write 0x13, 0x03   → capture every 8th edge (DIV8)
 ```
 
-**Note:** With IC prescaler > 0, the FREQ value is still computed correctly by the firmware. The PERIOD and PULSE readings reflect the time between the *captured* edges (i.e., 8 periods apart for DIV8), but FREQ is divided accordingly.
+**Note:** With IC prescaler > 0, the firmware automatically compensates FREQ and DUTY — they always reflect the true single-cycle values. PERIOD and PULSE are raw tick counts spanning N signal cycles (e.g. 8 periods apart for DIV8). To get the single-cycle period: `PERIOD / ic_div` where `ic_div` = 1, 2, 4, or 8.
 
-### 6. Configure LEDs
+### 7. Configure LEDs
 
 Three LEDs are independently configurable:
 
@@ -657,7 +676,7 @@ Write 0x23, [0x01, 0x00]   → 1 ms period
 Write 0x25, 0x64            → 100% duty
 ```
 
-### 7. Control PWM Outputs
+### 8. Control PWM Outputs
 
 Two independent PWM outputs are available:
 
@@ -763,7 +782,7 @@ Every time `CTRL` is written (for either PWM channel), a positive pulse is outpu
 Write 0x56, [0x32, 0x00]   → set trigger pulse width to 50 µs
 ```
 
-### 8. Save Configuration to Flash
+### 9. Save Configuration to Flash
 
 To persist the current edge, prescaler, LED, and **PWM** settings across power cycles:
 
@@ -771,17 +790,18 @@ To persist the current edge, prescaler, LED, and **PWM** settings across power c
 Write 0x30, 0x5A   → trigger flash save
 ```
 
-Settings saved: EDGE, TIM_PSC, IC_PSC, all LED parameters, all PWM parameters (FREQ_L, FREQ_H, DUTY, CTRL for both channels), TRIG_WIDTH.
+Settings saved: EDGE, TIM_PSC, IC_PSC, CAPTURE_CTRL, all LED parameters, all PWM parameters (FREQ_L, FREQ_H, DUTY, CTRL for both channels), TRIG_WIDTH.
 
 On next power-up, saved PWM outputs will automatically resume if CTRL bit0 was set when saved.
 
-### 9. Read Back Current Configuration
+### 10. Read Back Current Configuration
 
 Single reads:
 ```
 Read 0x10 (1 byte)  → EDGE
 Read 0x11 (2 bytes) → TIM_PSC
 Read 0x13 (1 byte)  → IC_PSC
+Read 0x14 (1 byte)  → CAPTURE_CTRL
 Read 0x20 (2 bytes) → LED_PERIOD
 Read 0x22 (1 byte)  → LED_DUTY
 Read 0x23 (2 bytes) → LED_G_PERIOD
@@ -809,7 +829,7 @@ Or burst read 9 bytes from `0x20` to get all LED config, or 11 bytes from `0x40`
 
 ## Timing Considerations
 
-- **After writing a config register** (EDGE, TIM_PSC, IC_PSC): The firmware immediately reconfigures the timer. Measurements are cleared (zeroed) and will populate once new edges arrive. Allow at least one signal period before reading.
+- **After writing a config register** (EDGE, TIM_PSC, IC_PSC, CAPTURE_CTRL): The firmware immediately reconfigures the timer. Measurements are cleared (zeroed) and will populate once new edges arrive (if capture is enabled). Allow at least one signal period before reading.
 - **After writing PWM CTRL:** The PWM output changes within microseconds. The trigger pulse on PA7 fires immediately after the update. No wait is needed between CTRL write and the next I2C transaction.
 - **PWM staging registers** (FREQ_L, FREQ_H, DUTY): These can be written in any order at any speed. The hardware only changes when CTRL is written.
 - **After saving config** (`0x30 = 0x5A`): Flash erase+write takes a few milliseconds. During this time, I2C may not respond. Wait **~10 ms** before the next I2C transaction.

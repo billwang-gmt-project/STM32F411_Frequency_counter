@@ -37,7 +37,8 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 | 0x10 | EDGE | 1 byte | Read/Write | Capture edge: 0 = rising (default), 1 = falling |
 | 0x11 | TIM_PSC | 2 bytes | Read/Write | Timer prescaler, 0-65535 (default: 0) |
 | 0x13 | IC_PSC | 1 byte | Read/Write | Input capture prescaler: 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 |
-| 0x14–0x1F | *(reserved)* | 12 bytes | Read | Zero-filled |
+| 0x14 | CAPTURE_CTRL | 1 byte | Read/Write | Capture enable: 0 = off, 1 = on (default: 1) |
+| 0x15–0x1F | *(reserved)* | 11 bytes | Read | Zero-filled |
 | 0x20 | LED_PERIOD | 2 bytes | Read/Write | Status LED (PC13) blink period in ms (default: 1000) |
 | 0x22 | LED_DUTY | 1 byte | Read/Write | Status LED on-duty in % 0-100 (default: 50) |
 | 0x23 | LED_G_PERIOD | 2 bytes | Read/Write | Green LED (PC14) blink period in ms (default: 1000) |
@@ -65,7 +66,7 @@ Timer clock = 100,000,000 / (TIM_PSC + 1). With default TIM_PSC=0, each tick = 1
 
 ### Persistent Configuration
 
-All writable registers (capture config, LEDs, PWM outputs, trigger width) can be saved to internal flash by writing `0x5A` to the SAVE_CFG register. Saved settings are automatically restored on power-up — including PWM outputs, which resume automatically if enabled when saved. Configuration is stored in flash sector 7 (0x08060000) with a magic number for validation.
+All writable registers (capture config, capture enable, LEDs, PWM outputs, trigger width) can be saved to internal flash by writing `0x5A` to the SAVE_CFG register. Saved settings are automatically restored on power-up — including PWM outputs, which resume automatically if enabled when saved, and capture state. Configuration is stored in flash sector 7 (0x08060000) with a magic number for validation.
 
 ### Reading Registers
 
@@ -75,7 +76,7 @@ Write the register address, then read the data bytes. Burst reads are supported 
 START → 0x08 W → [reg_addr] → RESTART → 0x08 R → [data bytes...] → NACK → STOP
 ```
 
-For example, reading 16 bytes from address 0x00 returns PERIOD + FREQ + DUTY + PULSE in one transaction. Registers 0x14–0x1F are reserved (read as zero).
+For example, reading 16 bytes from address 0x00 returns PERIOD + FREQ + DUTY + PULSE in one transaction. Registers 0x15–0x1F are reserved (read as zero).
 
 ### Writing a Register
 

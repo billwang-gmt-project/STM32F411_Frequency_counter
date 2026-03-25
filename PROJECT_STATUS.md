@@ -35,7 +35,7 @@
 
 - **`Config_Save()` runs from I2C ISR context** (priority 2): flash sector erase takes ~100ms, blocking all interrupts at priority >= 2 during that time. TIM2 at priority 1 is unaffected, but I2C is blocked. Consider deferring flash save to a lower-priority FreeRTOS task in a future revision.
 - **CubeMX regeneration clobbers FreeRTOS handlers**: `SVC_Handler` and `PendSV_Handler` in `stm32f4xx_it.c` must be re-commented after any CubeMX code generation. The `SysTick_Handler` FreeRTOS call survives regeneration (inside USER CODE block).
-- **Register address gaps**: 0x14–0x1F and 0x29–0x3F are reserved (zero-filled in burst reads). Future registers could use this space.
+- **Register address gaps**: 0x15–0x1F and 0x29–0x3F are reserved (zero-filled in burst reads). Future registers could use this space.
 
 ## Architecture Summary
 

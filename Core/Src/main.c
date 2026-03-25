@@ -830,10 +830,14 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
     if (period > 1)
     {
       uint32_t timer_clock = TIM2_BASE_CLOCK_HZ / (g_tim_psc + 1);
+      /* IC prescaler: hardware captures every N-th edge (1,2,4,8).
+       * period spans N signal cycles; pulse is first half-cycle only.
+       * Scale frequency and duty accordingly. */
+      uint32_t ic_div = 1U << g_ic_psc;   /* 0→1, 1→2, 2→4, 3→8 */
       g_period_ticks = period;
       g_pulse_ticks = pulse;
-      g_frequency_hz = timer_clock / period;
-      g_duty_centipct = (uint32_t)((uint64_t)pulse * 10000 / period);
+      g_frequency_hz = (uint32_t)((uint64_t)timer_clock * ic_div / period);
+      g_duty_centipct = (uint32_t)((uint64_t)pulse * 10000 * ic_div / period);
     }
     g_last_capture_tick = HAL_GetTick();
   }

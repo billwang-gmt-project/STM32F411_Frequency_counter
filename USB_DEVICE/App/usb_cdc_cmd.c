@@ -70,12 +70,6 @@ static uint32_t read_u32(const uint8_t *buf)
          | ((uint32_t)buf[3] << 24);
 }
 
-/** Read a little-endian uint16 from a byte buffer. */
-static uint16_t read_u16(const uint8_t *buf)
-{
-    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
-}
-
 /** Write a little-endian uint16 into a byte buffer. */
 static void write_u16(uint8_t *buf, uint16_t val)
 {

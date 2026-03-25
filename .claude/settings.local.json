@@ -11,7 +11,19 @@
       "Bash(DEST=\"D:/github/STM32F411_Frequency_counter/Middlewares/Third_Party/FreeRTOS/Source\")",
       "Bash(mkdir -p \"$DEST/include\" \"$DEST/portable/GCC/ARM_CM4F\" \"$DEST/portable/MemMang\")",
       "Bash(cp \"$REPO/tasks.c\" \"$REPO/queue.c\" \"$REPO/list.c\" \"$REPO/timers.c\" \"$DEST/\")",
-      "Bash(cp \"$REPO/include/\"*.h \"$DEST/include/\")"
+      "Bash(cp \"$REPO/include/\"*.h \"$DEST/include/\")",
+      "Bash(python3:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(arm-none-eabi-size \"D:/github/STM32F411_Frequency_counter/Debug/Frequency_Counter.elf\")",
+      "Bash(find D:/github/STM32F411_Frequency_counter/Middlewares/ST -name *.c -o -name *.h)",
+      "Bash(find D:/github/STM32F411_Frequency_counter/USB_DEVICE/App -name *.c -o -name *.h)",
+      "Bash(find D:/github/STM32F411_Frequency_counter/Middlewares -type f -name *.c -o -name *.h)",
+      "Bash(grep -E \"\\\\.\\(c|h\\)$\")",
+      "Bash(xargs grep:*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''tools/pwm_dashboard.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''tools/pwm_dashboard.py''\\).read\\(\\)\\); print\\(''Syntax OK - '' + str\\(len\\(open\\(''tools/pwm_dashboard.py''\\).readlines\\(\\)\\)\\) + '' lines''\\)\")"
     ]
   }
 }

@@ -6,6 +6,9 @@ Release/
 .settings/
 *.launch
 
+# Python cache
+__pycache__/
+
 # Eclipse metadata (optional - uncomment if you don't want to share IDE config)
 # .cproject
 # .project

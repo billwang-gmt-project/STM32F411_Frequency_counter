@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-STM32F411CEUx frequency counter with I2C slave interface. Measures signal frequency, period, duty cycle, and pulse width on PA15, exposable via I2C register-based protocol at slave address 0x08.
+STM32F411CEUx frequency counter with I2C slave interface. Measures signal frequency, period, duty cycle, and pulse width on PA15, plus two independent PWM outputs (PA8, PB6) with auto-prescaler — all controllable via I2C register-based protocol at slave address 0x08.
 
 ## Build
 
@@ -43,6 +43,9 @@ The `.ioc` file (`Frequency_Counter.ioc`) drives code generation. All peripheral
 | GPIO PC13 | Status LED (active-low) | PC13 — initialized manually in USER CODE, not in CubeMX |
 | GPIO PC14 | Green LED (active-high) | PC14 — initialized manually in USER CODE |
 | GPIO PB10 | Red LED (active-high) | PB10 — initialized manually in USER CODE |
+| TIM1 CH1 | PWM output 1 | PA8 (AF1) — initialized manually in USER CODE |
+| TIM4 CH1 | PWM output 2 | PB6 (AF2) — initialized manually in USER CODE |
+| GPIO PA7 | Trigger pulse output | PA7 — fires on PWM parameter apply |
 | Flash Sector 7 | Config storage (0x08060000) | Stores all settings with magic number validation |
 
 ### Data Flow
@@ -78,10 +81,29 @@ I2C master read → I2C1_EV_IRQHandler → HAL_I2C_AddrCallback
 | 0x26 | LED_R_PERIOD | 2B | R/W | Red LED blink period in ms (default: 1000) |
 | 0x28 | LED_R_DUTY | 1B | R/W | Red LED on-duty 0-100% (default: 50) |
 | 0x30 | SAVE_CFG | 1B | W | Write 0x5A to save all config to flash |
+| 0x40 | PWM1_FREQ_L | 2B | R/W | PWM1 target frequency low 16 bits (Hz) |
+| 0x42 | PWM1_FREQ_H | 2B | R/W | PWM1 target frequency high 16 bits (Hz) |
+| 0x44 | PWM1_DUTY | 2B | R/W | PWM1 duty cycle 0-10000 (0.01% units) |
+| 0x46 | PWM1_CTRL | 1B | R/W | bit0=enable; writing applies staged FREQ+DUTY |
+| 0x47 | PWM1_PSC | 2B | R | Auto-computed prescaler (debug) |
+| 0x49 | PWM1_ARR | 2B | R | Auto-computed ARR (debug) |
+| 0x4B | PWM2_FREQ_L | 2B | R/W | PWM2 target frequency low 16 bits (Hz) |
+| 0x4D | PWM2_FREQ_H | 2B | R/W | PWM2 target frequency high 16 bits (Hz) |
+| 0x4F | PWM2_DUTY | 2B | R/W | PWM2 duty cycle 0-10000 (0.01% units) |
+| 0x51 | PWM2_CTRL | 1B | R/W | bit0=enable; writing applies staged FREQ+DUTY |
+| 0x52 | PWM2_PSC | 2B | R | Auto-computed prescaler (debug) |
+| 0x54 | PWM2_ARR | 2B | R | Auto-computed ARR (debug) |
+| 0x56 | TRIG_WIDTH | 2B | R/W | Trigger pulse width in us (1-1000, default: 10) |
 
 All multi-byte values are little-endian. Config persists across power cycles via flash sector 7.
 
-**Burst reads**: Registers are contiguous in a 41-byte map (0x00–0x28). A single read can span multiple registers — the slave builds a snapshot and sends from the start address onward. E.g., read 16 bytes from 0x00 returns PERIOD+FREQ+DUTY+PULSE. The master NACKs/STOPs to end.
+**PWM staging**: Writing FREQ_L, FREQ_H, DUTY only stages values. Writing CTRL commits them atomically to hardware and fires a trigger pulse on PA7. 32-bit frequency is split into two 16-bit registers because I2C writes send at most 2 data bytes per transaction.
+
+**Auto-prescaler**: PWM_ComputeParams() maximizes ARR (duty resolution) for the target frequency. Both TIM1 and TIM4 run at 100 MHz. Frequency range: ~2 Hz to ~50 MHz.
+
+**Glitch-free updates**: TIM1/TIM4 use ARR preload (ARPE) and OC preload. New PSC/ARR/CCR are written to shadow registers, then a forced update event loads them atomically.
+
+**Burst reads**: Registers are contiguous in an 88-byte map (0x00-0x57). A single read can span multiple registers — the slave builds a snapshot and sends from the start address onward. E.g., read 16 bytes from 0x00 returns PERIOD+FREQ+DUTY+PULSE. The master NACKs/STOPs to end.
 
 ### Key Code Locations
 
@@ -132,3 +154,8 @@ After CubeMX regeneration, these changes outside USER CODE blocks must be re-app
 - `FreqCounter_Reconfigure()` in `main.c` is the single function to call when any timer parameter changes (edge, prescalers) — it stops, reconfigures, and restarts both channels
 - `Config_Save()` erases flash sector 7 and writes a `ConfigData_t` struct with magic number — called via I2C write 0x5A to reg 0x30
 - `Config_Load()` runs at boot before peripherals start — validates magic, applies saved settings or keeps defaults
+- `PWM_Apply()` is the single function for glitch-free PWM updates — computes PSC/ARR/CCR, writes shadow registers, forces UEV
+- `PWM_ComputeParams()` auto-selects optimal prescaler to maximize ARR (duty resolution) for target frequency
+- `Trigger_Pulse()` outputs a configurable-width pulse on PA7 when PWM parameters are applied via CTRL register write
+- PWM timer handles (`htim1_pwm`, `htim4_pwm`) and all PWM logic are `static` in `main.c` — no external references needed
+- CONFIG_MAGIC changed to `0xDEADBEF2` when PWM fields were added to ConfigData_t — old config auto-resets to defaults

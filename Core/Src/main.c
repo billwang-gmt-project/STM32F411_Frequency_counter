@@ -75,10 +75,37 @@
 #define REG_SAVE_CFG     0x30   /* W   1 byte:  write 0x5A to save config */
 #define SAVE_CFG_KEY     0x5A
 
+/* I2C registers - PWM1 output (TIM1_CH1, PA8) */
+#define REG_PWM1_FREQ_L  0x40   /* R/W 2 bytes: target freq low 16 bits (Hz) */
+#define REG_PWM1_FREQ_H  0x42   /* R/W 2 bytes: target freq high 16 bits (Hz) */
+#define REG_PWM1_DUTY    0x44   /* R/W 2 bytes: duty 0-10000 (0.01% units) */
+#define REG_PWM1_CTRL    0x46   /* R/W 1 byte:  bit0=enable; write applies staged values */
+#define REG_PWM1_PSC     0x47   /* R   2 bytes: auto-computed prescaler */
+#define REG_PWM1_ARR     0x49   /* R   2 bytes: auto-computed ARR */
+/* I2C registers - PWM2 output (TIM4_CH1, PB6) */
+#define REG_PWM2_FREQ_L  0x4B   /* R/W 2 bytes: target freq low 16 bits (Hz) */
+#define REG_PWM2_FREQ_H  0x4D   /* R/W 2 bytes: target freq high 16 bits (Hz) */
+#define REG_PWM2_DUTY    0x4F   /* R/W 2 bytes: duty 0-10000 (0.01% units) */
+#define REG_PWM2_CTRL    0x51   /* R/W 1 byte:  bit0=enable; write applies staged values */
+#define REG_PWM2_PSC     0x52   /* R   2 bytes: auto-computed prescaler */
+#define REG_PWM2_ARR     0x54   /* R   2 bytes: auto-computed ARR */
+/* I2C registers - trigger config */
+#define REG_TRIG_WIDTH   0x56   /* R/W 2 bytes: trigger pulse width in us (1-1000) */
+
+/* PWM timer clock (TIM1 APB2, TIM4 APB1 — both 100 MHz with prescaler multiplier) */
+#define PWM_TIMER_CLOCK_HZ  100000000UL
+#define PWM_DEFAULT_DUTY     5000U   /* 50.00% */
+#define PWM_DUTY_MAX         10000U
+
+/* Trigger output (PA7) */
+#define TRIG_GPIO_PORT  GPIOA
+#define TRIG_GPIO_PIN   GPIO_PIN_7
+#define TRIG_DEFAULT_WIDTH_US  10U
+
 /* Flash config storage - Sector 7 (last 128KB sector of STM32F411CE) */
 #define CONFIG_FLASH_SECTOR   FLASH_SECTOR_7
 #define CONFIG_FLASH_ADDR     0x08060000UL
-#define CONFIG_MAGIC          0xDEADBEEFUL
+#define CONFIG_MAGIC          0xDEADBEF2UL
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -102,7 +129,32 @@ static uint8_t  g_ic_psc = 0;           /* 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 */
 /* I2C register protocol state */
 static uint8_t i2c_reg_addr = 0xFF;
 static uint8_t i2c_rx_buf[3];           /* reg addr + up to 2 data bytes */
-static uint8_t i2c_tx_buf[41];         /* full register map for burst reads (0x00-0x28) */
+static uint8_t i2c_tx_buf[88];        /* full register map for burst reads (0x00-0x57) */
+
+/* PWM output - timer handles */
+static TIM_HandleTypeDef htim1_pwm;
+static TIM_HandleTypeDef htim4_pwm;
+
+/* PWM1 staging registers (written by I2C, applied on CTRL write) */
+static uint16_t g_pwm1_freq_l = 0;
+static uint16_t g_pwm1_freq_h = 0;
+static uint16_t g_pwm1_duty = PWM_DEFAULT_DUTY;
+static uint8_t  g_pwm1_ctrl = 0;
+/* PWM1 active computed values (read-only via I2C) */
+static uint16_t g_pwm1_psc = 0;
+static uint16_t g_pwm1_arr = 0;
+
+/* PWM2 staging registers */
+static uint16_t g_pwm2_freq_l = 0;
+static uint16_t g_pwm2_freq_h = 0;
+static uint16_t g_pwm2_duty = PWM_DEFAULT_DUTY;
+static uint8_t  g_pwm2_ctrl = 0;
+/* PWM2 active computed values */
+static uint16_t g_pwm2_psc = 0;
+static uint16_t g_pwm2_arr = 0;
+
+/* Trigger pulse config */
+static uint16_t g_trig_width_us = TRIG_DEFAULT_WIDTH_US;
 
 /* LED parameters (written by I2C, read by LedTask) */
 static uint16_t g_led_period_ms = LED_DEFAULT_PERIOD;
@@ -126,6 +178,15 @@ static void FreqCounter_Reconfigure(void);
 static void LED_Init(void);
 static void LED_G_Init(void);
 static void LED_R_Init(void);
+static void PWM1_Init(void);
+static void PWM2_Init(void);
+static void Trigger_GPIO_Init(void);
+static uint8_t PWM_ComputeParams(uint32_t freq_hz, uint16_t *psc, uint16_t *arr);
+static uint32_t PWM_ComputeCCR(uint16_t arr, uint16_t duty_centipct);
+static void PWM_Apply(TIM_HandleTypeDef *htim, uint32_t channel,
+                      uint32_t freq_hz, uint16_t duty_centipct,
+                      uint8_t enable, uint16_t *out_psc, uint16_t *out_arr);
+static void Trigger_Pulse(void);
 static void Config_Load(void);
 static void Config_Save(void);
 static void LedTask(void *pvParameters);
@@ -173,6 +234,9 @@ int main(void)
   LED_Init();
   LED_G_Init();
   LED_R_Init();
+  PWM1_Init();
+  PWM2_Init();
+  Trigger_GPIO_Init();
   Config_Load();
 
   HAL_NVIC_SetPriority(TIM2_IRQn, 1, 0);
@@ -191,6 +255,20 @@ int main(void)
   if (g_edge_config != EDGE_RISING || g_tim_psc != 0 || g_ic_psc != 0)
   {
     FreqCounter_Reconfigure();
+  }
+
+  /* Apply saved PWM config if enabled */
+  if (g_pwm1_ctrl & 0x01)
+  {
+    uint32_t freq = ((uint32_t)g_pwm1_freq_h << 16) | g_pwm1_freq_l;
+    PWM_Apply(&htim1_pwm, TIM_CHANNEL_1, freq, g_pwm1_duty,
+              1, &g_pwm1_psc, &g_pwm1_arr);
+  }
+  if (g_pwm2_ctrl & 0x01)
+  {
+    uint32_t freq = ((uint32_t)g_pwm2_freq_h << 16) | g_pwm2_freq_l;
+    PWM_Apply(&htim4_pwm, TIM_CHANNEL_1, freq, g_pwm2_duty,
+              1, &g_pwm2_psc, &g_pwm2_arr);
   }
 
   /* Create FreeRTOS tasks */
@@ -308,6 +386,150 @@ static void LED_R_Init(void)
   HAL_GPIO_WritePin(LED_R_GPIO_PORT, LED_R_GPIO_PIN, GPIO_PIN_RESET); /* off */
 }
 
+/* --- PWM Output Init --- */
+
+static void PWM1_Init(void)
+{
+  __HAL_RCC_TIM1_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = GPIO_PIN_8;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  gpio.Alternate = GPIO_AF1_TIM1;
+  HAL_GPIO_Init(GPIOA, &gpio);
+
+  htim1_pwm.Instance = TIM1;
+  htim1_pwm.Init.Prescaler = 0;
+  htim1_pwm.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1_pwm.Init.Period = 65535;
+  htim1_pwm.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1_pwm.Init.RepetitionCounter = 0;
+  htim1_pwm.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  HAL_TIM_PWM_Init(&htim1_pwm);
+
+  TIM_OC_InitTypeDef oc = {0};
+  oc.OCMode = TIM_OCMODE_PWM1;
+  oc.Pulse = 0;
+  oc.OCPolarity = TIM_OCPOLARITY_HIGH;
+  oc.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  oc.OCFastMode = TIM_OCFAST_DISABLE;
+  oc.OCIdleState = TIM_OCIDLESTATE_RESET;
+  oc.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  HAL_TIM_PWM_ConfigChannel(&htim1_pwm, &oc, TIM_CHANNEL_1);
+}
+
+static void PWM2_Init(void)
+{
+  __HAL_RCC_TIM4_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = GPIO_PIN_6;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  gpio.Alternate = GPIO_AF2_TIM4;
+  HAL_GPIO_Init(GPIOB, &gpio);
+
+  htim4_pwm.Instance = TIM4;
+  htim4_pwm.Init.Prescaler = 0;
+  htim4_pwm.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4_pwm.Init.Period = 65535;
+  htim4_pwm.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4_pwm.Init.RepetitionCounter = 0;
+  htim4_pwm.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  HAL_TIM_PWM_Init(&htim4_pwm);
+
+  TIM_OC_InitTypeDef oc = {0};
+  oc.OCMode = TIM_OCMODE_PWM1;
+  oc.Pulse = 0;
+  oc.OCPolarity = TIM_OCPOLARITY_HIGH;
+  oc.OCFastMode = TIM_OCFAST_DISABLE;
+  HAL_TIM_PWM_ConfigChannel(&htim4_pwm, &oc, TIM_CHANNEL_1);
+}
+
+static void Trigger_GPIO_Init(void)
+{
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = TRIG_GPIO_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(TRIG_GPIO_PORT, &gpio);
+  HAL_GPIO_WritePin(TRIG_GPIO_PORT, TRIG_GPIO_PIN, GPIO_PIN_RESET);
+}
+
+/* --- PWM Auto-Prescaler and Glitch-Free Apply --- */
+
+static uint8_t PWM_ComputeParams(uint32_t freq_hz, uint16_t *psc, uint16_t *arr)
+{
+  if (freq_hz == 0) return 1;
+  uint32_t total = PWM_TIMER_CLOCK_HZ / freq_hz;
+  if (total < 2) return 1;
+  uint32_t prescaler = (total > 65536) ? (total - 1) / 65536 : 0;
+  if (prescaler > 65535) return 1;
+  uint32_t period = total / (prescaler + 1) - 1;
+  if (period > 65535) period = 65535;
+  if (period == 0) period = 1;
+  *psc = (uint16_t)prescaler;
+  *arr = (uint16_t)period;
+  return 0;
+}
+
+static uint32_t PWM_ComputeCCR(uint16_t arr, uint16_t duty_centipct)
+{
+  if (duty_centipct >= PWM_DUTY_MAX) return (uint32_t)arr + 1;
+  if (duty_centipct == 0) return 0;
+  return (uint32_t)(arr + 1) * duty_centipct / PWM_DUTY_MAX;
+}
+
+static void PWM_Apply(TIM_HandleTypeDef *htim, uint32_t channel,
+                      uint32_t freq_hz, uint16_t duty_centipct,
+                      uint8_t enable, uint16_t *out_psc, uint16_t *out_arr)
+{
+  if (!enable || freq_hz == 0)
+  {
+    HAL_TIM_PWM_Stop(htim, channel);
+    *out_psc = 0;
+    *out_arr = 0;
+    return;
+  }
+
+  uint16_t psc, arr;
+  if (PWM_ComputeParams(freq_hz, &psc, &arr) != 0)
+  {
+    *out_psc = 0;
+    *out_arr = 0;
+    return;
+  }
+  uint32_t ccr = PWM_ComputeCCR(arr, duty_centipct);
+
+  __HAL_TIM_SET_PRESCALER(htim, psc);
+  __HAL_TIM_SET_AUTORELOAD(htim, arr);
+  __HAL_TIM_SET_COMPARE(htim, channel, ccr);
+  htim->Instance->EGR = TIM_EGR_UG;
+
+  *out_psc = psc;
+  *out_arr = arr;
+
+  if (!(htim->Instance->CR1 & TIM_CR1_CEN))
+  {
+    HAL_TIM_PWM_Start(htim, channel);
+  }
+}
+
+static void Trigger_Pulse(void)
+{
+  uint32_t loops = (uint32_t)g_trig_width_us * 25;
+  TRIG_GPIO_PORT->BSRR = TRIG_GPIO_PIN;
+  for (volatile uint32_t i = 0; i < loops; i++) {}
+  TRIG_GPIO_PORT->BSRR = (uint32_t)TRIG_GPIO_PIN << 16;
+}
+
 /* --- FreeRTOS Tasks --- */
 
 static void LedTask(void *pvParameters)
@@ -403,6 +625,16 @@ typedef struct {
   uint8_t  led_g_duty_pct;
   uint16_t led_r_period_ms;
   uint8_t  led_r_duty_pct;
+  /* PWM outputs */
+  uint16_t pwm1_freq_l;
+  uint16_t pwm1_freq_h;
+  uint16_t pwm1_duty;
+  uint8_t  pwm1_ctrl;
+  uint16_t pwm2_freq_l;
+  uint16_t pwm2_freq_h;
+  uint16_t pwm2_duty;
+  uint8_t  pwm2_ctrl;
+  uint16_t trig_width_us;
 } ConfigData_t;
 
 static void Config_Load(void)
@@ -419,6 +651,18 @@ static void Config_Load(void)
   g_led_g_duty_pct  = cfg->led_g_duty_pct <= 100 ? cfg->led_g_duty_pct : LED_DEFAULT_DUTY;
   g_led_r_period_ms = cfg->led_r_period_ms > 0 ? cfg->led_r_period_ms : LED_DEFAULT_PERIOD;
   g_led_r_duty_pct  = cfg->led_r_duty_pct <= 100 ? cfg->led_r_duty_pct : LED_DEFAULT_DUTY;
+
+  /* PWM outputs */
+  g_pwm1_freq_l    = cfg->pwm1_freq_l;
+  g_pwm1_freq_h    = cfg->pwm1_freq_h;
+  g_pwm1_duty      = cfg->pwm1_duty <= PWM_DUTY_MAX ? cfg->pwm1_duty : PWM_DEFAULT_DUTY;
+  g_pwm1_ctrl      = cfg->pwm1_ctrl;
+  g_pwm2_freq_l    = cfg->pwm2_freq_l;
+  g_pwm2_freq_h    = cfg->pwm2_freq_h;
+  g_pwm2_duty      = cfg->pwm2_duty <= PWM_DUTY_MAX ? cfg->pwm2_duty : PWM_DEFAULT_DUTY;
+  g_pwm2_ctrl      = cfg->pwm2_ctrl;
+  g_trig_width_us  = (cfg->trig_width_us >= 1 && cfg->trig_width_us <= 1000)
+                       ? cfg->trig_width_us : TRIG_DEFAULT_WIDTH_US;
 }
 
 static void Config_Save(void)
@@ -434,6 +678,15 @@ static void Config_Save(void)
   cfg.led_g_duty_pct  = g_led_g_duty_pct;
   cfg.led_r_period_ms = g_led_r_period_ms;
   cfg.led_r_duty_pct  = g_led_r_duty_pct;
+  cfg.pwm1_freq_l     = g_pwm1_freq_l;
+  cfg.pwm1_freq_h     = g_pwm1_freq_h;
+  cfg.pwm1_duty       = g_pwm1_duty;
+  cfg.pwm1_ctrl       = g_pwm1_ctrl;
+  cfg.pwm2_freq_l     = g_pwm2_freq_l;
+  cfg.pwm2_freq_h     = g_pwm2_freq_h;
+  cfg.pwm2_duty       = g_pwm2_duty;
+  cfg.pwm2_ctrl       = g_pwm2_ctrl;
+  cfg.trig_width_us   = g_trig_width_us;
 
   HAL_FLASH_Unlock();
 
@@ -539,7 +792,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 
 /* --- I2C Slave Register Protocol --- */
 
-#define REG_MAP_END  0x29  /* one past last register byte (LED_R_DUTY at 0x28) */
+#define REG_MAP_END  0x58  /* one past last register byte (TRIG_WIDTH at 0x56, 2 bytes) */
 
 static uint8_t I2C_BuildTxBuffer(uint8_t start_reg)
 {
@@ -572,6 +825,27 @@ static uint8_t I2C_BuildTxBuffer(uint8_t start_reg)
   i2c_tx_buf[0x25] = g_led_g_duty_pct;
   memcpy(&i2c_tx_buf[0x26], &g_led_r_period_ms, 2);
   i2c_tx_buf[0x28] = g_led_r_duty_pct;
+
+  /* 0x29-0x3F: reserved (zeroed by memset) */
+
+  /* 0x40-0x4A: PWM1 config */
+  memcpy(&i2c_tx_buf[0x40], &g_pwm1_freq_l, 2);
+  memcpy(&i2c_tx_buf[0x42], &g_pwm1_freq_h, 2);
+  memcpy(&i2c_tx_buf[0x44], &g_pwm1_duty, 2);
+  i2c_tx_buf[0x46] = g_pwm1_ctrl;
+  memcpy(&i2c_tx_buf[0x47], &g_pwm1_psc, 2);
+  memcpy(&i2c_tx_buf[0x49], &g_pwm1_arr, 2);
+
+  /* 0x4B-0x55: PWM2 config */
+  memcpy(&i2c_tx_buf[0x4B], &g_pwm2_freq_l, 2);
+  memcpy(&i2c_tx_buf[0x4D], &g_pwm2_freq_h, 2);
+  memcpy(&i2c_tx_buf[0x4F], &g_pwm2_duty, 2);
+  i2c_tx_buf[0x51] = g_pwm2_ctrl;
+  memcpy(&i2c_tx_buf[0x52], &g_pwm2_psc, 2);
+  memcpy(&i2c_tx_buf[0x54], &g_pwm2_arr, 2);
+
+  /* 0x56-0x57: trigger config */
+  memcpy(&i2c_tx_buf[0x56], &g_trig_width_us, 2);
 
   if (start_reg >= REG_MAP_END) return 1; /* fallback: send 1 zero byte */
   return REG_MAP_END - start_reg;
@@ -666,6 +940,80 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
   case REG_SAVE_CFG:
     if (i2c_rx_buf[1] == SAVE_CFG_KEY) Config_Save();
     break;
+
+  /* --- PWM1 registers --- */
+  case REG_PWM1_FREQ_L:
+  {
+    uint16_t val;
+    memcpy(&val, &i2c_rx_buf[1], 2);
+    g_pwm1_freq_l = val;
+    break;
+  }
+  case REG_PWM1_FREQ_H:
+  {
+    uint16_t val;
+    memcpy(&val, &i2c_rx_buf[1], 2);
+    g_pwm1_freq_h = val;
+    break;
+  }
+  case REG_PWM1_DUTY:
+  {
+    uint16_t val;
+    memcpy(&val, &i2c_rx_buf[1], 2);
+    if (val <= PWM_DUTY_MAX) g_pwm1_duty = val;
+    break;
+  }
+  case REG_PWM1_CTRL:
+  {
+    g_pwm1_ctrl = i2c_rx_buf[1];
+    uint32_t freq = ((uint32_t)g_pwm1_freq_h << 16) | g_pwm1_freq_l;
+    PWM_Apply(&htim1_pwm, TIM_CHANNEL_1, freq, g_pwm1_duty,
+              g_pwm1_ctrl & 0x01, &g_pwm1_psc, &g_pwm1_arr);
+    Trigger_Pulse();
+    break;
+  }
+
+  /* --- PWM2 registers --- */
+  case REG_PWM2_FREQ_L:
+  {
+    uint16_t val;
+    memcpy(&val, &i2c_rx_buf[1], 2);
+    g_pwm2_freq_l = val;
+    break;
+  }
+  case REG_PWM2_FREQ_H:
+  {
+    uint16_t val;
+    memcpy(&val, &i2c_rx_buf[1], 2);
+    g_pwm2_freq_h = val;
+    break;
+  }
+  case REG_PWM2_DUTY:
+  {
+    uint16_t val;
+    memcpy(&val, &i2c_rx_buf[1], 2);
+    if (val <= PWM_DUTY_MAX) g_pwm2_duty = val;
+    break;
+  }
+  case REG_PWM2_CTRL:
+  {
+    g_pwm2_ctrl = i2c_rx_buf[1];
+    uint32_t freq = ((uint32_t)g_pwm2_freq_h << 16) | g_pwm2_freq_l;
+    PWM_Apply(&htim4_pwm, TIM_CHANNEL_1, freq, g_pwm2_duty,
+              g_pwm2_ctrl & 0x01, &g_pwm2_psc, &g_pwm2_arr);
+    Trigger_Pulse();
+    break;
+  }
+
+  /* --- Trigger config --- */
+  case REG_TRIG_WIDTH:
+  {
+    uint16_t val;
+    memcpy(&val, &i2c_rx_buf[1], 2);
+    if (val >= 1 && val <= 1000) g_trig_width_us = val;
+    break;
+  }
+
   default:
     break;
   }

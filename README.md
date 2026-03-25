@@ -1,12 +1,15 @@
 # STM32F411 Frequency Counter
 
-A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. A host MCU reads measurements and configures settings over I2C. All configuration is persistable to flash. Runs on FreeRTOS.
+A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. Also provides two independent PWM outputs with auto-prescaler for maximum resolution. A host MCU reads measurements, configures settings, and controls PWM outputs over I2C. All configuration is persistable to flash. Runs on FreeRTOS.
 
 ## Hardware
 
 | Pin | Function |
 |-----|----------|
 | PA15 | Signal input (TIM2_CH1) |
+| PA8 | PWM output 1 (TIM1_CH1) |
+| PB6 | PWM output 2 (TIM4_CH1) |
+| PA7 | Trigger pulse output (fires on PWM parameter apply) |
 | PB7 | I2C1 SDA |
 | PB8 | I2C1 SCL |
 | PC13 | Status LED (active-low, blinks at 1 Hz default) |
@@ -42,6 +45,19 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 | 0x26 | LED_R_PERIOD | 2 bytes | Read/Write | Red LED (PB10) blink period in ms (default: 1000) |
 | 0x28 | LED_R_DUTY | 1 byte | Read/Write | Red LED on-duty in % 0-100 (default: 50) |
 | 0x30 | SAVE_CFG | 1 byte | Write | Write 0x5A to save all config to flash |
+| 0x40 | PWM1_FREQ_L | 2 bytes | Read/Write | PWM1 target frequency, low 16 bits (Hz) |
+| 0x42 | PWM1_FREQ_H | 2 bytes | Read/Write | PWM1 target frequency, high 16 bits (Hz) |
+| 0x44 | PWM1_DUTY | 2 bytes | Read/Write | PWM1 duty in 0.01% units (0–10000) |
+| 0x46 | PWM1_CTRL | 1 byte | Read/Write | bit0=enable; writing applies staged values |
+| 0x47 | PWM1_PSC | 2 bytes | Read | Auto-computed prescaler |
+| 0x49 | PWM1_ARR | 2 bytes | Read | Auto-computed auto-reload value |
+| 0x4B | PWM2_FREQ_L | 2 bytes | Read/Write | PWM2 target frequency, low 16 bits (Hz) |
+| 0x4D | PWM2_FREQ_H | 2 bytes | Read/Write | PWM2 target frequency, high 16 bits (Hz) |
+| 0x4F | PWM2_DUTY | 2 bytes | Read/Write | PWM2 duty in 0.01% units (0–10000) |
+| 0x51 | PWM2_CTRL | 1 byte | Read/Write | bit0=enable; writing applies staged values |
+| 0x52 | PWM2_PSC | 2 bytes | Read | Auto-computed prescaler |
+| 0x54 | PWM2_ARR | 2 bytes | Read | Auto-computed auto-reload value |
+| 0x56 | TRIG_WIDTH | 2 bytes | Read/Write | Trigger pulse width in µs (1–1000, default: 10) |
 
 All multi-byte values are **little-endian** (native ARM byte order).
 
@@ -49,7 +65,7 @@ Timer clock = 100,000,000 / (TIM_PSC + 1). With default TIM_PSC=0, each tick = 1
 
 ### Persistent Configuration
 
-All writable registers (EDGE, TIM_PSC, IC_PSC, LED_PERIOD, LED_DUTY, LED_G_PERIOD, LED_G_DUTY, LED_R_PERIOD, LED_R_DUTY) can be saved to internal flash by writing `0x5A` to the SAVE_CFG register. Saved settings are automatically restored on power-up. Configuration is stored in flash sector 7 (0x08060000) with a magic number for validation.
+All writable registers (capture config, LEDs, PWM outputs, trigger width) can be saved to internal flash by writing `0x5A` to the SAVE_CFG register. Saved settings are automatically restored on power-up — including PWM outputs, which resume automatically if enabled when saved. Configuration is stored in flash sector 7 (0x08060000) with a magic number for validation.
 
 ### Reading Registers
 
@@ -68,6 +84,26 @@ Write the register address followed by the data:
 ```
 START → 0x08 W → [reg_addr] [data bytes...] → STOP
 ```
+
+### PWM Outputs
+
+Two independent PWM outputs (PA8 and PB6) are controlled via a staging protocol:
+
+1. Write `FREQ_L` and `FREQ_H` to set the target frequency in Hz (32-bit, split into two 16-bit registers)
+2. Write `DUTY` to set the duty cycle (0–10000 in 0.01% units)
+3. Write `CTRL` with bit0=1 to **apply** the staged values atomically and enable output
+
+Only writing `CTRL` changes the hardware output. The firmware auto-computes the optimal prescaler (PSC) and auto-reload value (ARR) to maximize duty cycle resolution. Both timers run at 100 MHz. A trigger pulse is output on PA7 each time `CTRL` is written.
+
+**Example: set PWM1 to 1 kHz, 50% duty:**
+```
+Write 0x40, [0xE8, 0x03]   → FREQ_L = 1000 (low 16 bits)
+Write 0x42, [0x00, 0x00]   → FREQ_H = 0 (high 16 bits)
+Write 0x44, [0x88, 0x13]   → DUTY = 5000 (50.00%)
+Write 0x46, 0x01            → enable + apply
+```
+
+See [docs/HOST_PROGRAMMING_GUIDE.md](docs/HOST_PROGRAMMING_GUIDE.md) for detailed examples in Arduino, Python, C#, STM32 HAL, and MicroPython.
 
 ### Host Examples
 
@@ -167,6 +203,16 @@ Console.WriteLine($"Frequency: {freq} Hz, Duty: {dutyPercent:F2} %");
 | No-signal timeout | 1 second (all registers read 0) |
 | Minimum measurable period | 2 timer ticks (50 MHz max input) |
 | Maximum measurable period | 2^32 ticks = ~42.9 seconds (at 100 MHz) |
+
+## PWM Output Specifications
+
+| Parameter | Value |
+|-----------|-------|
+| Outputs | 2 independent channels: PA8 (TIM1) and PB6 (TIM4) |
+| Frequency range | ~2 Hz to ~50 MHz (auto-prescaler) |
+| Duty resolution | Depends on frequency (ARR+1 steps, maximized by auto-prescaler) |
+| Update method | Glitch-free: preload registers + forced update event |
+| Trigger output | PA7 positive pulse on each CTRL write (default 10 µs, configurable 1–1000 µs) |
 
 ### Prescaler Usage
 

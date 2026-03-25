@@ -2,7 +2,7 @@
 
 ## Overview
 
-The STM32F411 frequency counter operates as an I2C slave device. A host microcontroller (Arduino, STM32, Raspberry Pi, ESP32, etc.) connects via I2C and reads measurement data or writes configuration parameters through a register-based protocol.
+The STM32F411 frequency counter operates as an I2C slave device. A host microcontroller (Arduino, STM32, Raspberry Pi, ESP32, etc.) connects via I2C and reads measurement data, writes configuration parameters, or controls two independent PWM outputs through a register-based protocol.
 
 **I2C address:** `0x08` (7-bit)
 **Bus speed:** Standard (100 kHz) or Fast (400 kHz)
@@ -22,10 +22,14 @@ I2C SCL  ──────────┬──────── PB8  (SCL)
 GND      ────────────────── GND
 
 Signal input ──────────────── PA15
+PWM output 1 ─────────────── PA8  (TIM1_CH1)
+PWM output 2 ─────────────── PB6  (TIM4_CH1)
+Trigger output ───────────── PA7  (pulse on PWM change)
 ```
 
 - Pull-up resistors (2.2 kΩ–4.7 kΩ to 3.3 V) are required on both SDA and SCL.
 - The signal under test connects to PA15 (5 V tolerant on this pin).
+- PWM outputs (PA8, PB6) are 3.3 V push-pull. Trigger output (PA7) pulses high on each PWM apply.
 - Share a common GND between host and counter.
 
 ---
@@ -49,8 +53,22 @@ Signal input ──────────────── PA15
 | `0x26` | LED_R_PERIOD | 2 bytes | Read/Write | Red LED (PB10) blink period in ms |
 | `0x28` | LED_R_DUTY | 1 byte | Read/Write | Red LED on-duty percentage (0–100) |
 | `0x30` | SAVE_CFG | 1 byte | Write only | Write `0x5A` to save config to flash |
+| `0x31–0x3F` | *(reserved)* | 15 bytes | Read | Zero-filled |
+| `0x40` | PWM1_FREQ_L | 2 bytes | Read/Write | PWM1 target frequency, low 16 bits (Hz) |
+| `0x42` | PWM1_FREQ_H | 2 bytes | Read/Write | PWM1 target frequency, high 16 bits (Hz) |
+| `0x44` | PWM1_DUTY | 2 bytes | Read/Write | PWM1 duty cycle in 0.01% units (0–10000) |
+| `0x46` | PWM1_CTRL | 1 byte | Read/Write | bit0 = enable; **writing applies staged values** |
+| `0x47` | PWM1_PSC | 2 bytes | Read | Auto-computed prescaler (for debug) |
+| `0x49` | PWM1_ARR | 2 bytes | Read | Auto-computed auto-reload value (for debug) |
+| `0x4B` | PWM2_FREQ_L | 2 bytes | Read/Write | PWM2 target frequency, low 16 bits (Hz) |
+| `0x4D` | PWM2_FREQ_H | 2 bytes | Read/Write | PWM2 target frequency, high 16 bits (Hz) |
+| `0x4F` | PWM2_DUTY | 2 bytes | Read/Write | PWM2 duty cycle in 0.01% units (0–10000) |
+| `0x51` | PWM2_CTRL | 1 byte | Read/Write | bit0 = enable; **writing applies staged values** |
+| `0x52` | PWM2_PSC | 2 bytes | Read | Auto-computed prescaler (for debug) |
+| `0x54` | PWM2_ARR | 2 bytes | Read | Auto-computed auto-reload value (for debug) |
+| `0x56` | TRIG_WIDTH | 2 bytes | Read/Write | Trigger pulse width in µs (1–1000, default: 10) |
 
-Registers are contiguous in a 41-byte map (0x00–0x28). **Burst reads** are supported — a single read can span multiple registers. The slave builds a snapshot and sends from the start address onward.
+Registers are contiguous in an 88-byte map (0x00–0x57). **Burst reads** are supported — a single read can span multiple registers. The slave builds a snapshot and sends from the start address onward.
 
 ---
 
@@ -202,6 +220,12 @@ void writeReg16(uint8_t reg, uint16_t value) {
     Wire.endTransmission();
 }
 
+// Write a 4-byte value as two 16-bit register writes (for PWM frequency)
+void writeFreq(uint8_t regL, uint32_t freq_hz) {
+    writeReg16(regL,     freq_hz & 0xFFFF);         // FREQ_L
+    writeReg16(regL + 2, (freq_hz >> 16) & 0xFFFF); // FREQ_H
+}
+
 void setup() {
     Serial.begin(115200);
     Wire.begin();
@@ -219,6 +243,20 @@ void loop() {
     Serial.println(" %");
 
     delay(500);
+}
+
+// --- PWM control example ---
+// Set PWM1 (PA8) to 1 kHz, 50% duty
+void setupPWM1() {
+    writeFreq(0x40, 1000);         // 1000 Hz
+    writeReg16(0x44, 5000);        // 50.00%
+    writeReg8(0x46, 0x01);         // enable + apply
+
+    // Read back auto-computed values
+    uint16_t psc = readReg16(0x47);
+    uint16_t arr = readReg16(0x49);
+    Serial.print("PSC="); Serial.print(psc);
+    Serial.print(" ARR="); Serial.println(arr);
 }
 ```
 
@@ -277,6 +315,33 @@ write_reg16(0x11, 9)
 
 # --- Save config to flash ---
 write_reg8(0x30, 0x5A)
+
+# --- PWM control ---
+def write_freq(reg_l, freq_hz):
+    """Write a 32-bit frequency as two 16-bit registers."""
+    write_reg16(reg_l, freq_hz & 0xFFFF)
+    write_reg16(reg_l + 2, (freq_hz >> 16) & 0xFFFF)
+
+# Set PWM1 (PA8) to 10 kHz, 30% duty
+write_freq(0x40, 10000)        # 10 kHz
+write_reg16(0x44, 3000)        # 30.00%
+write_reg8(0x46, 0x01)         # enable + apply → trigger pulse on PA7
+
+# Set PWM2 (PB6) to 440 Hz, 50% duty
+write_freq(0x4B, 440)          # 440 Hz
+write_reg16(0x4F, 5000)        # 50.00%
+write_reg8(0x51, 0x01)         # enable + apply
+
+# Read back auto-computed prescaler and ARR
+psc = read_reg16(0x47)
+arr = read_reg16(0x49)
+print(f"PWM1: PSC={psc}, ARR={arr}")
+
+# Disable PWM1
+write_reg8(0x46, 0x00)
+
+# Save all settings (including PWM) to flash
+write_reg8(0x30, 0x5A)
 ```
 
 ### STM32 HAL (Host MCU)
@@ -329,13 +394,26 @@ void FC_WriteReg16(uint8_t reg, uint16_t value) {
                       buf, 2, 100);
 }
 
-// Usage example
+// Write a 32-bit frequency as two 16-bit register writes
+void FC_WriteFreq(uint8_t regL, uint32_t freq_hz) {
+    FC_WriteReg16(regL, freq_hz & 0xFFFF);
+    FC_WriteReg16(regL + 2, (freq_hz >> 16) & 0xFFFF);
+}
+
+// Usage example — read measurements
 void ReadFrequencyCounter(void) {
     uint32_t freq = FC_ReadReg32(0x04);
     uint32_t duty = FC_ReadReg32(0x08);
 
     // freq is in Hz
     // duty is in 0.01% units, divide by 100.0 for percent
+}
+
+// Usage example — set PWM1 to 5 kHz, 75% duty
+void SetupPWM1(void) {
+    FC_WriteFreq(0x40, 5000);      // 5 kHz
+    FC_WriteReg16(0x44, 7500);     // 75.00%
+    FC_WriteReg8(0x46, 0x01);      // enable + apply
 }
 ```
 
@@ -406,12 +484,21 @@ def write_reg8(reg, val):
 def write_reg16(reg, val):
     i2c.writeto(ADDR, bytes([reg]) + struct.pack('<H', val))
 
+def write_freq(reg_l, freq_hz):
+    write_reg16(reg_l, freq_hz & 0xFFFF)
+    write_reg16(reg_l + 2, (freq_hz >> 16) & 0xFFFF)
+
 # Read measurements
 while True:
     freq = read_reg32(0x04)
     duty = read_reg32(0x08)
     print(f"Freq: {freq} Hz, Duty: {duty/100:.2f}%")
     time.sleep(0.5)
+
+# PWM example: set PWM1 to 1 kHz, 50%
+# write_freq(0x40, 1000)
+# write_reg16(0x44, 5000)
+# write_reg8(0x46, 0x01)
 ```
 
 ### C# (Burst Read — Frequency + Duty)
@@ -449,6 +536,31 @@ Console.WriteLine($"Freq: {freq} Hz");
 Console.WriteLine($"Duty: {dutyPercent:F2} %");
 Console.WriteLine($"Period: {periodUs:F2} us");
 Console.WriteLine($"Pulse: {pulse * 0.01:F2} us");
+```
+
+### C# (PWM Control)
+
+```csharp
+// Helper: write a 32-bit frequency as two 16-bit register writes
+void WriteFreq(byte regL, uint freqHz) {
+    byte[] lo = BitConverter.GetBytes((ushort)(freqHz & 0xFFFF));
+    byte[] hi = BitConverter.GetBytes((ushort)(freqHz >> 16));
+    i2c.Write(ADDR, new byte[] { regL, lo[0], lo[1] });
+    i2c.Write(ADDR, new byte[] { (byte)(regL + 2), hi[0], hi[1] });
+}
+
+// Set PWM1 (PA8) to 1 kHz, 50% duty
+WriteFreq(0x40, 1000);
+byte[] duty = BitConverter.GetBytes((ushort)5000);
+i2c.Write(ADDR, new byte[] { 0x44, duty[0], duty[1] });  // DUTY = 5000
+i2c.Write(ADDR, new byte[] { 0x46, 0x01 });               // CTRL = enable + apply
+
+// Read back auto-computed PSC and ARR
+i2c.Write(ADDR, new byte[] { 0x47 });
+byte[] pscArr = i2c.Read(ADDR, 4);
+ushort psc = BitConverter.ToUInt16(pscArr, 0);
+ushort arr = BitConverter.ToUInt16(pscArr, 2);
+Console.WriteLine($"PSC={psc}, ARR={arr}");
 ```
 
 ---
@@ -543,38 +655,161 @@ Write 0x23, [0x01, 0x00]   → 1 ms period
 Write 0x25, 0x64            → 100% duty
 ```
 
-### 7. Save Configuration to Flash
+### 7. Control PWM Outputs
 
-To persist the current edge, prescaler, and LED settings across power cycles:
+Two independent PWM outputs are available:
+
+| Output | Pin | Timer | Registers |
+|--------|-----|-------|-----------|
+| PWM1 | PA8 | TIM1_CH1 | `0x40`–`0x46` |
+| PWM2 | PB6 | TIM4_CH1 | `0x4B`–`0x51` |
+
+#### Staging Protocol
+
+PWM uses a **staged write** pattern to allow glitch-free, atomic updates:
+
+1. Write `FREQ_L` — stores low 16 bits of target frequency (Hz), no hardware change
+2. Write `FREQ_H` — stores high 16 bits of target frequency (Hz), no hardware change
+3. Write `DUTY` — stores duty cycle (0–10000 in 0.01% units), no hardware change
+4. Write `CTRL` with bit0 = 1 — **applies** all staged values atomically and fires a trigger pulse on PA7
+
+You can update any subset of registers before writing `CTRL`. Only `CTRL` triggers the hardware update.
+
+#### Auto-Prescaler
+
+The firmware automatically computes the optimal timer prescaler (PSC) and auto-reload value (ARR) to maximize duty cycle resolution. Both TIM1 and TIM4 run from a 100 MHz clock. You can read back the computed values from the PSC and ARR registers for debugging.
+
+```
+PWM frequency = 100,000,000 / ((PSC + 1) × (ARR + 1))
+```
+
+| Target Frequency | Computed PSC | Computed ARR | Duty Steps |
+|-----------------|-------------|-------------|------------|
+| 1 Hz | 1525 | 65530 | 65,531 |
+| 1 kHz | 1 | 49,999 | 50,000 |
+| 10 kHz | 0 | 9,999 | 10,000 |
+| 100 kHz | 0 | 999 | 1,000 |
+| 1 MHz | 0 | 99 | 100 |
+
+#### Example: Set PWM1 to 1 kHz, 50% Duty
+
+```
+Write 0x40, [0xE8, 0x03]   → FREQ_L = 0x03E8 (1000 low 16 bits)
+Write 0x42, [0x00, 0x00]   → FREQ_H = 0x0000 (1000 high 16 bits)
+Write 0x44, [0x88, 0x13]   → DUTY   = 0x1388 (5000 = 50.00%)
+Write 0x46, 0x01            → CTRL   = enable + apply → PA7 trigger fires
+```
+
+#### Example: Change Duty to 25% (Keep Same Frequency)
+
+```
+Write 0x44, [0xC4, 0x09]   → DUTY = 0x09C4 (2500 = 25.00%)
+Write 0x46, 0x01            → CTRL = apply → PA7 trigger fires
+```
+
+Only the changed register and CTRL need to be written. FREQ_L/H retain their previous values.
+
+#### Example: Disable PWM1
+
+```
+Write 0x46, 0x00            → CTRL bit0 = 0 → output goes low
+```
+
+#### Example: Set PWM2 to 440 Hz, 75% Duty
+
+```
+Write 0x4B, [0xB8, 0x01]   → FREQ_L = 0x01B8 (440 low 16 bits)
+Write 0x4D, [0x00, 0x00]   → FREQ_H = 0x0000
+Write 0x4F, [0xD0, 0x1D]   → DUTY   = 0x1DD0 (7632 ≈ 76.32%... use 7500 = 0x1D4C)
+Write 0x51, 0x01            → CTRL   = enable + apply
+```
+
+For 75.00% duty: `7500 = 0x1D4C` → `Write 0x4F, [0x4C, 0x1D]`
+
+#### Setting Frequencies Above 65535 Hz
+
+The 32-bit frequency is split across two 16-bit registers. For example, 100,000 Hz = `0x000186A0`:
+
+```
+Write 0x40, [0xA0, 0x86]   → FREQ_L = 0x86A0 (low 16 bits)
+Write 0x42, [0x01, 0x00]   → FREQ_H = 0x0001 (high 16 bits)
+Write 0x46, 0x01            → Apply
+```
+
+#### Reading PWM Status
+
+```
+Read 0x40 (2 bytes) → FREQ_L
+Read 0x42 (2 bytes) → FREQ_H
+Read 0x44 (2 bytes) → DUTY
+Read 0x46 (1 byte)  → CTRL (bit0 = enabled)
+Read 0x47 (2 bytes) → PSC (auto-computed prescaler)
+Read 0x49 (2 bytes) → ARR (auto-computed auto-reload)
+```
+
+Or burst read 11 bytes from `0x40` to get all PWM1 registers at once.
+
+#### Trigger Pulse (PA7)
+
+Every time `CTRL` is written (for either PWM channel), a positive pulse is output on PA7. This can be used to trigger an oscilloscope or logic analyzer to capture the moment of change.
+
+- Default pulse width: **10 µs**
+- Configurable via register `0x56` (TRIG_WIDTH): 1–1000 µs
+- Pulse timing is approximate (software loop)
+
+```
+Write 0x56, [0x32, 0x00]   → set trigger pulse width to 50 µs
+```
+
+### 8. Save Configuration to Flash
+
+To persist the current edge, prescaler, LED, and **PWM** settings across power cycles:
 
 ```
 Write 0x30, 0x5A   → trigger flash save
 ```
 
-Settings saved: EDGE, TIM_PSC, IC_PSC, LED_PERIOD, LED_DUTY, LED_G_PERIOD, LED_G_DUTY, LED_R_PERIOD, LED_R_DUTY.
+Settings saved: EDGE, TIM_PSC, IC_PSC, all LED parameters, all PWM parameters (FREQ_L, FREQ_H, DUTY, CTRL for both channels), TRIG_WIDTH.
 
-### 8. Read Back Current Configuration
+On next power-up, saved PWM outputs will automatically resume if CTRL bit0 was set when saved.
+
+### 9. Read Back Current Configuration
 
 Single reads:
 ```
-Read 0x10 (1 byte) → EDGE
+Read 0x10 (1 byte)  → EDGE
 Read 0x11 (2 bytes) → TIM_PSC
-Read 0x13 (1 byte) → IC_PSC
+Read 0x13 (1 byte)  → IC_PSC
 Read 0x20 (2 bytes) → LED_PERIOD
-Read 0x22 (1 byte) → LED_DUTY
+Read 0x22 (1 byte)  → LED_DUTY
 Read 0x23 (2 bytes) → LED_G_PERIOD
-Read 0x25 (1 byte) → LED_G_DUTY
+Read 0x25 (1 byte)  → LED_G_DUTY
 Read 0x26 (2 bytes) → LED_R_PERIOD
-Read 0x28 (1 byte) → LED_R_DUTY
+Read 0x28 (1 byte)  → LED_R_DUTY
+Read 0x40 (2 bytes) → PWM1_FREQ_L
+Read 0x42 (2 bytes) → PWM1_FREQ_H
+Read 0x44 (2 bytes) → PWM1_DUTY
+Read 0x46 (1 byte)  → PWM1_CTRL
+Read 0x47 (2 bytes) → PWM1_PSC (auto-computed)
+Read 0x49 (2 bytes) → PWM1_ARR (auto-computed)
+Read 0x4B (2 bytes) → PWM2_FREQ_L
+Read 0x4D (2 bytes) → PWM2_FREQ_H
+Read 0x4F (2 bytes) → PWM2_DUTY
+Read 0x51 (1 byte)  → PWM2_CTRL
+Read 0x52 (2 bytes) → PWM2_PSC (auto-computed)
+Read 0x54 (2 bytes) → PWM2_ARR (auto-computed)
+Read 0x56 (2 bytes) → TRIG_WIDTH
 ```
 
-Or burst read 9 bytes from `0x20` to get all LED config at once.
+Or burst read 9 bytes from `0x20` to get all LED config, or 11 bytes from `0x40` for all PWM1 config.
 
 ---
 
 ## Timing Considerations
 
 - **After writing a config register** (EDGE, TIM_PSC, IC_PSC): The firmware immediately reconfigures the timer. Measurements are cleared (zeroed) and will populate once new edges arrive. Allow at least one signal period before reading.
+- **After writing PWM CTRL:** The PWM output changes within microseconds. The trigger pulse on PA7 fires immediately after the update. No wait is needed between CTRL write and the next I2C transaction.
+- **PWM staging registers** (FREQ_L, FREQ_H, DUTY): These can be written in any order at any speed. The hardware only changes when CTRL is written.
 - **After saving config** (`0x30 = 0x5A`): Flash erase+write takes a few milliseconds. During this time, I2C may not respond. Wait **~10 ms** before the next I2C transaction.
 - **Polling rate:** There is no minimum interval between reads. The firmware updates measurements on every capture edge. A polling rate of 10–100 Hz is typical.
 - **I2C clock stretching:** The slave may stretch the clock briefly during reads while copying measurement data. Ensure your host I2C master supports clock stretching.
@@ -593,3 +828,8 @@ Or burst read 9 bytes from `0x20` to get all LED config at once.
 | Config lost after power cycle | Forgot to save | Write `0x5A` to register `0x30` after configuring |
 | I2C hangs | Bus stuck, missing pull-ups | Power cycle both devices, check pull-up resistors |
 | Reads return stale data | Polling too fast after reconfig | Wait at least one signal period after config change |
+| PWM output stays off | CTRL not written after FREQ/DUTY | Write CTRL with bit0=1 to apply staged values |
+| PWM frequency incorrect | Only FREQ_L written, FREQ_H stale | Always write both FREQ_L and FREQ_H before CTRL |
+| PWM PSC/ARR read as 0 | Frequency out of range or disabled | Check CTRL bit0; verify frequency is 2 Hz–50 MHz |
+| No trigger pulse on PA7 | CTRL not written, or pulse too short | Write CTRL to trigger; increase TRIG_WIDTH if needed |
+| PWM not restored after power cycle | Config not saved | Write `0x5A` to register `0x30` after configuring PWM |

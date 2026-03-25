@@ -53,7 +53,15 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+/* USB event queue helpers — called from USB ISR callbacks */
+void USB_EnqueueCdcRx(const uint8_t *data, uint16_t len);
+void USB_EnqueueHidRx(const uint8_t *data, uint16_t len);
 
+/* Shared functions for regmap module */
+void FreqCounter_Reconfigure(void);
+void PWM_Apply_Ext(uint8_t pwm_num);
+void Trigger_Pulse(void);
+void Config_Save(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

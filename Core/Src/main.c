@@ -20,6 +20,7 @@
 #include "main.h"
 #include "i2c.h"
 #include "tim.h"
+#include "usb_otg.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -27,6 +28,15 @@
 #include <string.h>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
+#include "semphr.h"
+#include "regmap.h"
+#include "usb_device.h"
+#include "usbd_composite.h"
+#include "usb_cdc_cmd.h"
+#include "usb_hid_regmap.h"
+#include "cdc_fifo.h"
+#include "usbd_def.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,7 +46,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TIM2_BASE_CLOCK_HZ  100000000UL
+#define TIM2_BASE_CLOCK_HZ  96000000UL
 #define FREQ_TIMEOUT_MS     1000U
 
 /* I2C register addresses */
@@ -92,8 +102,8 @@
 /* I2C registers - trigger config */
 #define REG_TRIG_WIDTH   0x56   /* R/W 2 bytes: trigger pulse width in us (1-1000) */
 
-/* PWM timer clock (TIM1 APB2, TIM4 APB1 — both 100 MHz with prescaler multiplier) */
-#define PWM_TIMER_CLOCK_HZ  100000000UL
+/* PWM timer clock (TIM1 APB2, TIM4 APB1 — both 96 MHz with prescaler multiplier) */
+#define PWM_TIMER_CLOCK_HZ  96000000UL
 #define PWM_DEFAULT_DUTY     5000U   /* 50.00% */
 #define PWM_DUTY_MAX         10000U
 
@@ -105,7 +115,7 @@
 /* Flash config storage - Sector 7 (last 128KB sector of STM32F411CE) */
 #define CONFIG_FLASH_SECTOR   FLASH_SECTOR_7
 #define CONFIG_FLASH_ADDR     0x08060000UL
-#define CONFIG_MAGIC          0xDEADBEF2UL
+#define CONFIG_MAGIC          0xDEADBEF3UL
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -122,9 +132,9 @@ volatile uint32_t g_duty_centipct = 0;   /* duty in 0.01% units (5000 = 50.00%) 
 volatile uint32_t g_pulse_ticks = 0;
 volatile uint32_t g_last_capture_tick = 0;
 
-static uint8_t  g_edge_config = EDGE_RISING;
-static uint16_t g_tim_psc = 0;
-static uint8_t  g_ic_psc = 0;           /* 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 */
+uint8_t  g_edge_config = EDGE_RISING;
+uint16_t g_tim_psc = 0;
+uint8_t  g_ic_psc = 0;           /* 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 */
 
 /* I2C register protocol state */
 static uint8_t i2c_reg_addr = 0xFF;
@@ -135,46 +145,57 @@ static uint8_t i2c_tx_buf[88];        /* full register map for burst reads (0x00
 static TIM_HandleTypeDef htim1_pwm;
 static TIM_HandleTypeDef htim4_pwm;
 
-/* PWM1 staging registers (written by I2C, applied on CTRL write) */
-static uint16_t g_pwm1_freq_l = 0;
-static uint16_t g_pwm1_freq_h = 0;
-static uint16_t g_pwm1_duty = PWM_DEFAULT_DUTY;
-static uint8_t  g_pwm1_ctrl = 0;
-/* PWM1 active computed values (read-only via I2C) */
-static uint16_t g_pwm1_psc = 0;
-static uint16_t g_pwm1_arr = 0;
+/* PWM1 staging registers (written by I2C/USB, applied on CTRL write) */
+uint16_t g_pwm1_freq_l = 0;
+uint16_t g_pwm1_freq_h = 0;
+uint16_t g_pwm1_duty = PWM_DEFAULT_DUTY;
+uint8_t  g_pwm1_ctrl = 0;
+/* PWM1 active computed values (read-only via I2C/USB) */
+uint16_t g_pwm1_psc = 0;
+uint16_t g_pwm1_arr = 0;
 
 /* PWM2 staging registers */
-static uint16_t g_pwm2_freq_l = 0;
-static uint16_t g_pwm2_freq_h = 0;
-static uint16_t g_pwm2_duty = PWM_DEFAULT_DUTY;
-static uint8_t  g_pwm2_ctrl = 0;
+uint16_t g_pwm2_freq_l = 0;
+uint16_t g_pwm2_freq_h = 0;
+uint16_t g_pwm2_duty = PWM_DEFAULT_DUTY;
+uint8_t  g_pwm2_ctrl = 0;
 /* PWM2 active computed values */
-static uint16_t g_pwm2_psc = 0;
-static uint16_t g_pwm2_arr = 0;
+uint16_t g_pwm2_psc = 0;
+uint16_t g_pwm2_arr = 0;
 
 /* Trigger pulse config */
-static uint16_t g_trig_width_us = TRIG_DEFAULT_WIDTH_US;
+uint16_t g_trig_width_us = TRIG_DEFAULT_WIDTH_US;
 
-/* LED parameters (written by I2C, read by LedTask) */
-static uint16_t g_led_period_ms = LED_DEFAULT_PERIOD;
-static uint8_t  g_led_duty_pct = LED_DEFAULT_DUTY;
-static uint16_t g_led_g_period_ms = LED_DEFAULT_PERIOD;
-static uint8_t  g_led_g_duty_pct = LED_DEFAULT_DUTY;
-static uint16_t g_led_r_period_ms = LED_DEFAULT_PERIOD;
-static uint8_t  g_led_r_duty_pct = LED_DEFAULT_DUTY;
+/* LED parameters (written by I2C/USB, read by LedTask) */
+uint16_t g_led_period_ms = LED_DEFAULT_PERIOD;
+uint8_t  g_led_duty_pct = LED_DEFAULT_DUTY;
+uint16_t g_led_g_period_ms = LED_DEFAULT_PERIOD;
+uint8_t  g_led_g_duty_pct = LED_DEFAULT_DUTY;
+uint16_t g_led_r_period_ms = LED_DEFAULT_PERIOD;
+uint8_t  g_led_r_duty_pct = LED_DEFAULT_DUTY;
 
 /* FreeRTOS */
 #define LED_TASK_STACK_SIZE      256  /* words = 1024 bytes */
 #define MONITOR_TASK_STACK_SIZE  256  /* words = 1024 bytes */
+#define USB_TASK_STACK_SIZE      512  /* words = 2048 bytes */
 static TaskHandle_t hLedTask = NULL;
 static TaskHandle_t hMonitorTask = NULL;
+static TaskHandle_t hUsbTask = NULL;
+
+/* HID event queue (small, 64-byte reports — works fine with FreeRTOS queue) */
+typedef struct {
+  uint8_t data[64];
+  uint16_t len;
+} HidEvent_t;
+
+#define HID_QUEUE_LEN  4
+static QueueHandle_t hid_evt_queue = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-static void FreqCounter_Reconfigure(void);
+void FreqCounter_Reconfigure(void);
 static void LED_Init(void);
 static void LED_G_Init(void);
 static void LED_R_Init(void);
@@ -186,12 +207,14 @@ static uint32_t PWM_ComputeCCR(uint16_t arr, uint16_t duty_centipct);
 static void PWM_Apply(TIM_HandleTypeDef *htim, uint32_t channel,
                       uint32_t freq_hz, uint16_t duty_centipct,
                       uint8_t enable, uint16_t *out_psc, uint16_t *out_arr);
-static void Trigger_Pulse(void);
+void Trigger_Pulse(void);
+void Config_Save(void);
 static void Config_Load(void);
-static void Config_Save(void);
 static void LedTask(void *pvParameters);
 static void MonitorTask(void *pvParameters);
+static void UsbTask(void *pvParameters);
 static uint8_t I2C_BuildTxBuffer(uint8_t start_reg);
+void PWM_Apply_Ext(uint8_t pwm_num);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -230,6 +253,7 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
+  MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
   LED_Init();
   LED_G_Init();
@@ -271,9 +295,22 @@ int main(void)
               1, &g_pwm2_psc, &g_pwm2_arr);
   }
 
+  /* Initialize shared register access layer */
+  RegMap_Init();
+
+  /* Initialize CDC FIFOs (RX + TX ring buffers) */
+  CDC_FIFO_Init();
+
+  /* Initialize USB composite device (CDC + HID) */
+  MX_USB_DEVICE_Init();
+
+  /* HID event queue (CDC uses FIFO instead) */
+  hid_evt_queue = xQueueCreate(HID_QUEUE_LEN, sizeof(HidEvent_t));
+
   /* Create FreeRTOS tasks */
   xTaskCreate(LedTask, "LED", LED_TASK_STACK_SIZE, NULL, 1, &hLedTask);
   xTaskCreate(MonitorTask, "MON", MONITOR_TASK_STACK_SIZE, NULL, 1, &hMonitorTask);
+  xTaskCreate(UsbTask, "USB", USB_TASK_STACK_SIZE, NULL, 2, &hUsbTask);
 
   /* Start scheduler — does not return */
   vTaskStartScheduler();
@@ -308,13 +345,12 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 100;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 25;
+  RCC_OscInitStruct.PLL.PLLN = 192;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
@@ -522,9 +558,9 @@ static void PWM_Apply(TIM_HandleTypeDef *htim, uint32_t channel,
   }
 }
 
-static void Trigger_Pulse(void)
+void Trigger_Pulse(void)
 {
-  uint32_t loops = (uint32_t)g_trig_width_us * 25;
+  uint32_t loops = (uint32_t)g_trig_width_us * 24;  /* ~96MHz/4 cycles per loop */
   TRIG_GPIO_PORT->BSRR = TRIG_GPIO_PIN;
   for (volatile uint32_t i = 0; i < loops; i++) {}
   TRIG_GPIO_PORT->BSRR = (uint32_t)TRIG_GPIO_PIN << 16;
@@ -665,7 +701,7 @@ static void Config_Load(void)
                        ? cfg->trig_width_us : TRIG_DEFAULT_WIDTH_US;
 }
 
-static void Config_Save(void)
+void Config_Save(void)
 {
   ConfigData_t cfg;
   cfg.magic           = CONFIG_MAGIC;
@@ -715,7 +751,7 @@ static const uint32_t ic_psc_map[] = {
     TIM_ICPSC_DIV1, TIM_ICPSC_DIV2, TIM_ICPSC_DIV4, TIM_ICPSC_DIV8
 };
 
-static void FreqCounter_Reconfigure(void)
+void FreqCounter_Reconfigure(void)
 {
   HAL_TIM_IC_Stop_IT(&htim2, TIM_CHANNEL_1);
   HAL_TIM_IC_Stop(&htim2, TIM_CHANNEL_2);
@@ -1032,6 +1068,111 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
   HAL_I2C_EnableListen_IT(hi2c);
+}
+
+/* --- PWM_Apply_Ext: wrapper for regmap.c to call --- */
+
+void PWM_Apply_Ext(uint8_t pwm_num)
+{
+  if (pwm_num == 1)
+  {
+    uint32_t freq = ((uint32_t)g_pwm1_freq_h << 16) | g_pwm1_freq_l;
+    PWM_Apply(&htim1_pwm, TIM_CHANNEL_1, freq, g_pwm1_duty,
+              g_pwm1_ctrl & 0x01, &g_pwm1_psc, &g_pwm1_arr);
+  }
+  else if (pwm_num == 2)
+  {
+    uint32_t freq = ((uint32_t)g_pwm2_freq_h << 16) | g_pwm2_freq_l;
+    PWM_Apply(&htim4_pwm, TIM_CHANNEL_1, freq, g_pwm2_duty,
+              g_pwm2_ctrl & 0x01, &g_pwm2_psc, &g_pwm2_arr);
+  }
+}
+
+/* --- USB Event Helpers (called from USB ISR callbacks) --- */
+
+void USB_EnqueueCdcRx(const uint8_t *data, uint16_t len)
+{
+  /* CDC now uses FIFO — this is called from usb_device.c CDC_Receive_FS
+   * which already calls CDC_RxPush + CDC_RxNotifyFromISR directly.
+   * This stub is kept for API compatibility. */
+  (void)data; (void)len;
+}
+
+void USB_EnqueueHidRx(const uint8_t *data, uint16_t len)
+{
+  if (hid_evt_queue == NULL) return;
+  HidEvent_t evt;
+  evt.len = (len > 64) ? 64 : len;
+  memcpy(evt.data, data, evt.len);
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  xQueueSendFromISR(hid_evt_queue, &evt, &xHigherPriorityTaskWoken);
+  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+/* --- USB Processing Task (FIFO-based) --- */
+
+static char     usb_line_buf[128];
+static uint16_t usb_line_pos;
+
+static void UsbTask(void *pvParameters)
+{
+  (void)pvParameters;
+  static uint8_t tx_chunk[64];
+  static uint8_t hid_resp[64];
+  HidEvent_t hid_evt;
+
+  usb_line_pos = 0;
+
+  for (;;)
+  {
+    /* 1. Drain TX FIFO → USB CDC IN (non-blocking) */
+    if (CDC_TxAvailable() > 0 && !CDC_TxBusy())
+    {
+      uint16_t n = CDC_TxPop(tx_chunk, 64);
+      if (n > 0)
+      {
+        USBD_CDC_Transmit(&hUsbDeviceFS, tx_chunk, n);
+      }
+    }
+
+    /* 2. Drain RX FIFO → parse lines → push responses to TX FIFO */
+    {
+      int16_t c;
+      while ((c = CDC_RxPopByte()) >= 0)
+      {
+        if (c == '\r' || c == '\n')
+        {
+          if (usb_line_pos > 0)
+          {
+            usb_line_buf[usb_line_pos] = '\0';
+            CDC_TxPush((const uint8_t *)"\r\n", 2);
+            CDC_ParseLine(usb_line_buf);
+            usb_line_pos = 0;
+          }
+        }
+        else
+        {
+          if (usb_line_pos < sizeof(usb_line_buf) - 1)
+          {
+            usb_line_buf[usb_line_pos++] = (char)c;
+          }
+        }
+      }
+    }
+
+    /* 3. Check HID queue (non-blocking) */
+    if (xQueueReceive(hid_evt_queue, &hid_evt, 0) == pdTRUE)
+    {
+      HID_ProcessReport(hid_evt.data, hid_resp);
+      USBD_HID_SendReport(&hUsbDeviceFS, hid_resp, 64);
+    }
+
+    /* 4. Sleep if nothing to do — wake on RX data or timeout */
+    if (CDC_RxAvailable() == 0 && CDC_TxAvailable() == 0)
+    {
+      CDC_RxWait(5);
+    }
+  }
 }
 
 /* USER CODE END 4 */

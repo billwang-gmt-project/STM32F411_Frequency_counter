@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "tim.h"
 #include "i2c.h"
+#include "stm32f4xx_hal_pcd.h"
 #include "FreeRTOS.h"
 #include "task.h"
 /* USER CODE END Includes */
@@ -223,5 +224,11 @@ void I2C1_EV_IRQHandler(void)
 void I2C1_ER_IRQHandler(void)
 {
   HAL_I2C_ER_IRQHandler(&hi2c1);
+}
+
+extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
+void OTG_FS_IRQHandler(void)
+{
+  HAL_PCD_IRQHandler(&hpcd_USB_OTG_FS);
 }
 /* USER CODE END 1 */

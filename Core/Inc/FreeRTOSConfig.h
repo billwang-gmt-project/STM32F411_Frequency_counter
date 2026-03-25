@@ -13,7 +13,7 @@
 #define configTICK_RATE_HZ                ((TickType_t)1000)
 #define configMAX_PRIORITIES              (7)
 #define configMINIMAL_STACK_SIZE          ((uint16_t)128)    /* 128 words = 512 bytes */
-#define configTOTAL_HEAP_SIZE             ((size_t)(8 * 1024)) /* 8 KB */
+#define configTOTAL_HEAP_SIZE             ((size_t)(20 * 1024)) /* 20 KB for USB task + queues */
 #define configMAX_TASK_NAME_LEN           (16)
 #define configUSE_16_BIT_TICKS            0
 #define configIDLE_SHOULD_YIELD           1
@@ -26,7 +26,7 @@
 #define configCHECK_FOR_STACK_OVERFLOW    2     /* paint + watermark */
 
 /* -------------------- Synchronization primitives -------------------- */
-#define configUSE_MUTEXES                 0
+#define configUSE_MUTEXES                 1
 #define configUSE_RECURSIVE_MUTEXES       0
 #define configUSE_COUNTING_SEMAPHORES     0
 #define configQUEUE_REGISTRY_SIZE         0

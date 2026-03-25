@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-STM32F411CEUx frequency counter with I2C slave interface. Measures signal frequency, period, duty cycle, and pulse width on PA15, plus two independent PWM outputs (PA8, PB6) with auto-prescaler — all controllable via I2C register-based protocol at slave address 0x08.
+STM32F411CEUx frequency counter with I2C slave + USB CDC + USB HID interfaces. Measures signal frequency, period, duty cycle, and pulse width on PA15, plus two independent PWM outputs (PA8, PB6) with auto-prescaler — all controllable via I2C register-based protocol at slave address 0x08, USB CDC text console, or USB HID binary register access.
 
 ## Build
 
@@ -29,9 +29,10 @@ The `.ioc` file (`Frequency_Counter.ioc`) drives code generation. All peripheral
 
 ### Clock Tree
 
-- HSI 16MHz → PLL (M=8, N=100, P=2) → **SYSCLK 100MHz**
-- APB1: 50MHz, APB2: 100MHz
-- TIM2 clock: **100MHz** (APB1 timer multiplier ×2)
+- HSE 25MHz → PLL (M=25, N=192, P=2, Q=4) → **SYSCLK 96MHz**, **USB 48MHz**
+- APB1: 48MHz, APB2: 96MHz
+- TIM2 clock: **96MHz** (APB1 timer multiplier ×2)
+- USB OTG FS: **48MHz** (from PLLQ)
 
 ### Peripheral Configuration
 
@@ -46,6 +47,7 @@ The `.ioc` file (`Frequency_Counter.ioc`) drives code generation. All peripheral
 | TIM1 CH1 | PWM output 1 | PA8 (AF1) — initialized manually in USER CODE |
 | TIM4 CH1 | PWM output 2 | PB6 (AF2) — initialized manually in USER CODE |
 | GPIO PA7 | Trigger pulse output | PA7 — fires on PWM parameter apply |
+| USB_OTG_FS | USB CDC + HID composite | PA11 (DM), PA12 (DP) — CDC serial console + HID binary register access |
 | Flash Sector 7 | Config storage (0x08060000) | Stores all settings with magic number validation |
 
 ### Data Flow
@@ -60,7 +62,20 @@ I2C master read → I2C1_EV_IRQHandler → HAL_I2C_AddrCallback
   → register-based protocol: master writes reg addr, reads data
   → I2C_BuildTxBuffer() snapshots register map for burst reads
   → ListenCpltCallback re-arms for next transaction
+
+USB CDC/HID → OTG_FS_IRQHandler (priority 6, can call FreeRTOS APIs)
+  → HAL_PCD callbacks → USBD_LL callbacks → composite class dispatch
+  → CDC_Receive / HID OUT callback → USB_EnqueueCdcRx/HidRx (xQueueSendFromISR)
+  → UsbTask dequeues → CDC_ProcessRxData / HID_ProcessReport
+  → RegMap_BuildSnapshot (reads) / RegMap_Write (writes, mutex-protected)
 ```
+
+### USB Composite Device
+
+**CDC** (text console, bulk endpoints): Commands like `freq`, `set pwm1 freq 1000`, `save`, `help`.
+**HID** (binary register access, interrupt endpoints): 64-byte reports with read/write protocol.
+
+Both interfaces share the register map through `regmap.c` with FreeRTOS mutex protection for writes.
 
 ### I2C Register Map
 
@@ -107,11 +122,14 @@ All multi-byte values are little-endian. Config persists across power cycles via
 
 ### Key Code Locations
 
-- **Application logic** (callbacks, reconfigure, timeout): `Core/Src/main.c` USER CODE sections
+- **Application logic** (callbacks, reconfigure, timeout, UsbTask): `Core/Src/main.c` USER CODE sections
+- **Shared register map** (read/write for I2C + USB): `Core/Src/regmap.c`, `Core/Inc/regmap.h`
 - **TIM2 PWM Input setup** (CH2 + slave reset + PA15 remap): `Core/Src/tim.c` USER CODE sections
 - **I2C address override**: `Core/Src/i2c.c` USER CODE BEGIN I2C1_Init 2
-- **IRQ handlers**: `Core/Src/stm32f4xx_it.c` USER CODE BEGIN 1
+- **IRQ handlers** (TIM2, I2C, OTG_FS): `Core/Src/stm32f4xx_it.c` USER CODE BEGIN 1
 - **HAL module enables**: `Core/Inc/stm32f4xx_hal_conf.h`
+- **USB composite class** (CDC + HID): `Middlewares/ST/STM32_USB_Device_Library/Class/Composite/`
+- **USB application layer** (conf, desc, CDC cmd parser, HID handler): `USB_DEVICE/App/`
 - **CubeMX config**: `Frequency_Counter.ioc`
 
 ### FreeRTOS Integration
@@ -122,6 +140,7 @@ All multi-byte values are little-endian. Config persists across power cycles via
 
 | Task | Priority | Stack | Purpose |
 |------|----------|-------|---------|
+| UsbTask | 2 | 512 words | Processes CDC commands and HID reports from event queue |
 | LedTask | 1 | 256 words | Blinks all 3 LEDs with configurable period/duty |
 | MonitorTask | 1 | 256 words | Zeros measurements on capture timeout (1s) |
 | Idle (auto) | 0 | 128 words | FreeRTOS idle task |
@@ -133,6 +152,7 @@ All multi-byte values are little-endian. Config persists across power cycles via
 | TIM2 | 1 (highest) | Capture must not miss edges; above FreeRTOS API threshold |
 | I2C1_EV | 2 | I2C clock stretching; above FreeRTOS API threshold |
 | I2C1_ER | 2 | Error recovery; above FreeRTOS API threshold |
+| OTG_FS | 6 | USB device; below FreeRTOS threshold — CAN call `*FromISR()` APIs |
 | SysTick | 15 | FreeRTOS tick + HAL tick via hook |
 
 `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY = 5`. TIM2 (1) and I2C (2) are above this threshold — they must NOT call any FreeRTOS `*FromISR()` API (and they don't).
@@ -143,6 +163,7 @@ After CubeMX regeneration, these changes outside USER CODE blocks must be re-app
 1. **`stm32f4xx_it.c`**: Re-comment `SVC_Handler` and `PendSV_Handler` (FreeRTOS provides them via `#define` mapping)
 2. **`stm32f4xx_it.h`**: Re-comment prototypes for `SVC_Handler` and `PendSV_Handler`
 3. **`SysTick_Handler`** in `stm32f4xx_it.c` is kept but the FreeRTOS call in USER CODE block survives regeneration
+4. **USB middleware** in `Middlewares/ST/STM32_USB_Device_Library/` and `USB_DEVICE/` are NOT CubeMX-managed — they survive regeneration
 
 ## Conventions
 
@@ -158,4 +179,7 @@ After CubeMX regeneration, these changes outside USER CODE blocks must be re-app
 - `PWM_ComputeParams()` auto-selects optimal prescaler to maximize ARR (duty resolution) for target frequency
 - `Trigger_Pulse()` outputs a configurable-width pulse on PA7 when PWM parameters are applied via CTRL register write
 - PWM timer handles (`htim1_pwm`, `htim4_pwm`) and all PWM logic are `static` in `main.c` — no external references needed
-- CONFIG_MAGIC changed to `0xDEADBEF2` when PWM fields were added to ConfigData_t — old config auto-resets to defaults
+- CONFIG_MAGIC changed to `0xDEADBEF3` when clock changed from 100MHz to 96MHz for USB — old config auto-resets to defaults
+- USB composite device uses I-CUBE-USBD-Composite architecture pattern (https://github.com/alambe94/I-CUBE-USBD-Composite)
+- `regmap.c` is the shared register access layer — I2C, CDC, and HID all go through `RegMap_BuildSnapshot()` / `RegMap_Write()`
+- FreeRTOS mutex protects concurrent register writes from CDC/HID tasks; I2C ISR bypasses mutex (above FreeRTOS threshold, self-serializing)

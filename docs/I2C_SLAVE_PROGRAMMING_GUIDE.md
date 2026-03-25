@@ -1,8 +1,10 @@
-# Host Programming Guide — STM32F411 Frequency Counter (I2C Slave)
+# I2C Slave Programming Guide — STM32F411 Frequency Counter
 
 ## Overview
 
-The STM32F411 frequency counter operates as an I2C slave device. A host microcontroller (Arduino, STM32, Raspberry Pi, ESP32, etc.) connects via I2C and reads measurement data, writes configuration parameters, or controls two independent PWM outputs through a register-based protocol.
+The STM32F411 frequency counter provides an I2C slave interface for register-based control. A host microcontroller (Arduino, STM32, Raspberry Pi, ESP32, etc.) connects via I2C and reads measurement data, writes configuration parameters, or controls two independent PWM outputs.
+
+> **Note:** The device also supports USB CDC (text console) and USB HID (binary register access) interfaces. This guide covers the I2C slave interface only.
 
 **I2C address:** `0x08` (7-bit)
 **Bus speed:** Standard (100 kHz) or Fast (400 kHz)
@@ -109,13 +111,13 @@ A register write sends the register address followed by the data in a single tra
 
 ### Timer Clock
 
-The base timer clock is **100 MHz**. With a prescaler `PSC`, the effective timer clock is:
+The base timer clock is **96 MHz**. With a prescaler `PSC`, the effective timer clock is:
 
 ```
-timer_clock = 100,000,000 / (TIM_PSC + 1)
+timer_clock = 96,000,000 / (TIM_PSC + 1)
 ```
 
-Default `TIM_PSC = 0` → timer clock = 100 MHz → tick resolution = 10 ns.
+Default `TIM_PSC = 0` → timer clock = 96 MHz → tick resolution ≈ 10.4 ns.
 
 ### Converting Register Values
 
@@ -139,10 +141,10 @@ Default `TIM_PSC = 0` → timer clock = 100 MHz → tick resolution = 10 ns.
 
 | TIM_PSC | Timer Clock | Min Freq (32-bit) | Max Freq | Tick Resolution |
 |---------|-------------|-------------------|----------|-----------------|
-| 0 | 100 MHz | ~0.023 Hz | 50 MHz* | 10 ns |
-| 9 | 10 MHz | ~0.002 Hz | 5 MHz* | 100 ns |
-| 99 | 1 MHz | ~0.0002 Hz | 500 kHz | 1 µs |
-| 9999 | 10 kHz | N/A | 5 kHz | 100 µs |
+| 0 | 96 MHz | ~0.022 Hz | 48 MHz* | ~10.4 ns |
+| 9 | 9.6 MHz | ~0.002 Hz | 4.8 MHz* | ~104 ns |
+| 95 | 1 MHz | ~0.0002 Hz | 500 kHz | 1 µs |
+| 9599 | 10 kHz | N/A | 5 kHz | 100 µs |
 
 \* Practical max frequency depends on signal quality and IC prescaler.
 
@@ -530,12 +532,12 @@ uint duty   = BitConverter.ToUInt32(data, 8);     // DUTY (0.01% units)
 uint pulse  = BitConverter.ToUInt32(data, 12);    // PULSE (ticks)
 
 double dutyPercent = duty / 100.0;
-double periodUs = period * 0.01;  // at 100 MHz, 1 tick = 10 ns = 0.01 us
+double periodUs = period * (1.0 / 96.0);  // at 96 MHz, 1 tick ≈ 10.4 ns
 
 Console.WriteLine($"Freq: {freq} Hz");
 Console.WriteLine($"Duty: {dutyPercent:F2} %");
 Console.WriteLine($"Period: {periodUs:F2} us");
-Console.WriteLine($"Pulse: {pulse * 0.01:F2} us");
+Console.WriteLine($"Pulse: {pulse * (1.0 / 96.0):F2} us");
 ```
 
 ### C# (PWM Control)
@@ -615,10 +617,10 @@ Increase the timer prescaler to extend the 32-bit counter range:
 Write 0x11, [PSC_lo, PSC_hi]   → set prescaler (little-endian)
 ```
 
-Example: PSC = 99 (timer clock = 1 MHz, max period = 4294 seconds)
+Example: PSC = 95 (timer clock = 1 MHz, max period = 4294 seconds)
 
 ```
-Write 0x11, [0x63, 0x00]
+Write 0x11, [0x5F, 0x00]
 ```
 
 ### 5. Measure High Frequencies (> 1 MHz)
@@ -677,19 +679,19 @@ You can update any subset of registers before writing `CTRL`. Only `CTRL` trigge
 
 #### Auto-Prescaler
 
-The firmware automatically computes the optimal timer prescaler (PSC) and auto-reload value (ARR) to maximize duty cycle resolution. Both TIM1 and TIM4 run from a 100 MHz clock. You can read back the computed values from the PSC and ARR registers for debugging.
+The firmware automatically computes the optimal timer prescaler (PSC) and auto-reload value (ARR) to maximize duty cycle resolution. Both TIM1 and TIM4 run from a 96 MHz clock. You can read back the computed values from the PSC and ARR registers for debugging.
 
 ```
-PWM frequency = 100,000,000 / ((PSC + 1) × (ARR + 1))
+PWM frequency = 96,000,000 / ((PSC + 1) × (ARR + 1))
 ```
 
 | Target Frequency | Computed PSC | Computed ARR | Duty Steps |
 |-----------------|-------------|-------------|------------|
-| 1 Hz | 1525 | 65530 | 65,531 |
-| 1 kHz | 1 | 49,999 | 50,000 |
-| 10 kHz | 0 | 9,999 | 10,000 |
-| 100 kHz | 0 | 999 | 1,000 |
-| 1 MHz | 0 | 99 | 100 |
+| 1 Hz | 1464 | 65,535 | 65,536 |
+| 1 kHz | 1 | 47,999 | 48,000 |
+| 10 kHz | 0 | 9,599 | 9,600 |
+| 100 kHz | 0 | 959 | 960 |
+| 1 MHz | 0 | 95 | 96 |
 
 #### Example: Set PWM1 to 1 kHz, 50% Duty
 

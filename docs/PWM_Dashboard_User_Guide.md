@@ -51,12 +51,12 @@ The board has two PWM outputs and one capture input:
 │  ═══════════════════════     │  ═══════════════════════       │
 │  Duty (%):  [50.00] Step:[▾]│  Duty (%):  [50.00] Step:[▾]  │
 │  ═══════════════════════     │  ═══════════════════════       │
-│  [       Enable       ]     │  [       Enable       ]        │
+│  [✓] Enabled                │  [ ] Enabled                   │
 ├──────────────────────────────────────────────────────────────┤
 │  Captured Measurements                                       │
 │    Freq: 1000 Hz              Duty: 50.00%                   │
 │    Period: 96000 ticks        Pulse: 48000 ticks             │
-│  [Capture: ON] Edge:[Rising▾] │ [✓ Auto-refresh] [500 ms▾] [Refresh Now] │
+│  [✓] Capture  Edge:[Rising▾] │ [✓ Auto-refresh] [500 ms▾] [Refresh Now] │
 ├──────────────────────────────────────────────────────────────┤
 │  CDC Console                                                 │
 │  TX: [________________________] [Send]                       │
@@ -77,7 +77,7 @@ The board has two PWM outputs and one capture input:
 3. The **Connection** panel auto-detects FC-411 devices by VID/PID (`0x0483:0x5741`). Target devices appear first in the dropdown, labelled `COMx - FC-411 [serial]` with truncated serial numbers for easy identification.
 4. If multiple FC-411 boards are connected, select the desired device from the dropdown.
 5. If the port is not auto-detected, click **Refresh** to rescan, or select the port manually.
-6. Click **Connect**. The status indicator turns green. For FC-411 devices, a **device info bar** appears showing VID, PID, serial number, and the current nickname.
+6. Click **Connect**. The status indicator turns green. For FC-411 devices, a **device info bar** appears showing VID, PID, serial number, and the current nickname. The dashboard automatically queries the device for its current state (capture on/off, edge setting, PWM1/PWM2 frequency, duty, and enable status) and updates all GUI controls to match.
 
 ### 2. Device Info and Nickname
 
@@ -101,7 +101,7 @@ The device info bar is hidden when disconnected or when connected to a non-FC-41
 2. In the **PWM1 (PA8)** panel:
    - Type `1000` in the **Freq (Hz)** field.
    - Type `50.00` in the **Duty (%)** field.
-   - Click **Enable**.
+   - Check the **Enabled** checkbox.
 3. The **Captured Measurements** panel updates automatically (default: every 500 ms):
    - **Freq** should show approximately `1000 Hz`
    - **Duty** should show approximately `50.00%`
@@ -134,17 +134,17 @@ The device info bar is hidden when disconnected or when connected to a non-FC-41
 ### 6. Testing PWM2
 
 1. In the **PWM2 (PB6)** panel, set a different frequency (e.g., `5000` Hz) and duty (e.g., `25.00%`).
-2. Click **Enable** in the PWM2 panel.
+2. Check **Enabled** in the PWM2 panel.
 3. Move the jumper wire from PA8 to **PB6** → PA15.
 4. Observe the measurements update to match PWM2 settings.
 5. Both PWM channels are fully independent -- you can enable/disable them separately.
 
 ### 7. Enabling / Disabling Capture
 
-The **Capture: ON / OFF** button in the measurements panel controls whether the board is actively measuring the input signal on PA15.
+The **Capture** checkbox in the measurements panel controls whether the board is actively measuring the input signal on PA15.
 
-- Click the button to toggle capture on or off. When off, all measurements read zero.
-- The button state syncs from the device on each status refresh — if another interface (I2C, HID, or CDC console) changes the capture state, the button updates automatically.
+- Check or uncheck the checkbox to enable or disable capture. When off, all measurements read zero.
+- The checkbox state is read from the device on connect, and syncs on each status refresh — if another interface (I2C, HID, or CDC console) changes the capture state, the checkbox updates automatically.
 - **Auto-refresh pauses** when capture is off (no `MEAS:ALL?` polling) and resumes when capture is turned back on.
 
 **Capture edge**: The **Edge** dropdown next to the Capture button selects which edge triggers the measurement:
@@ -187,11 +187,12 @@ SYST:NAME "BENCH-1"   -- set device nickname
 
 **Clear**: Click **Clear** to empty the console output. The console keeps a maximum of 5000 lines.
 
-### 10. Disable PWM Output
+### 10. Enable / Disable PWM Output
 
-- Click the **Disable** button in the PWM panel to stop that channel's output.
+- Uncheck the **Enabled** checkbox in the PWM panel to stop that channel's output.
 - While disabled, slider and entry changes do not send commands to the device.
-- Click **Enable** again to re-apply the current frequency and duty settings.
+- Check **Enabled** again to re-apply the current frequency and duty settings.
+- The checkbox state is read from the device on connect — if the device already has a PWM channel enabled, the checkbox reflects that.
 
 ## Typical Test Scenarios
 
@@ -245,7 +246,7 @@ These are restored automatically the next time you launch the dashboard.
 |---------|-------|-----|
 | No COM port in dropdown | Board not connected or driver missing | Reconnect USB, click **Refresh**. On Windows, check Device Manager for the COM port. |
 | "Connected" but no measurements | No wire between PWM output and PA15 | Connect PA8 or PB6 to PA15 with a jumper wire |
-| Measurements show 0 Hz | PWM not enabled, capture off, or wire disconnected | Check **Capture: ON** button, click **Enable** in the PWM panel, check jumper wire |
+| Measurements show 0 Hz | PWM not enabled, capture off, or wire disconnected | Check **Capture** checkbox is checked, check **Enabled** in the PWM panel, check jumper wire |
 | Frequency reads wrong value | Timer prescaler changed | Send `set tim_psc 0` in the console to reset prescaler |
 | Duty reads wrong at high freq | Limited timer resolution at high frequency | Expected -- fewer ticks per period reduces duty accuracy |
 | `[DISCONNECTED]` in console | USB cable unplugged or board reset | Reconnect USB, click **Connect** again |

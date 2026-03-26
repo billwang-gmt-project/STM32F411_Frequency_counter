@@ -1,9 +1,9 @@
 # PROJECT_STATUS.md
 
 **Project**: STM32F411 Frequency Counter (I2C + USB CDC + USB HID)
-**Last updated**: 2026-03-26 (PWM Dashboard GUI enhancements, INDIRECTTI polarity fix)
+**Last updated**: 2026-03-26 (GUI state sync on connect, checkbox refactor)
 **Branch**: `master`
-**Latest commit**: `ee8ef61` — 新增裝置暱稱功能（NICKNAME 暫存器 0x60，支援多裝置識別）
+**Latest commit**: `42b12a7` — GUI 改進：連線時讀取裝置狀態、Capture/PWM 啟用改為 Checkbox
 
 ---
 
@@ -34,6 +34,8 @@
 - [x] PWM Dashboard: stop auto-refresh polling when capture is off
 - [x] Fix INDIRECTTI polarity bug: swap edge condition in `FreqCounter_Reconfigure()` so EDGE=0 (Rising) correctly measures high-time duty
 - [x] Update all documentation: CLAUDE.md, README.md, CDC_programming_guide.md, PWM_Dashboard_User_Guide.md
+- [x] PWM Dashboard: read device state on connect (capture, edge, PWM freq/duty/enable) via sequential SCPI query queue
+- [x] PWM Dashboard: refactor Capture and PWM Enable from toggle buttons to checkboxes
 
 ## Current Obstacles
 
@@ -108,14 +110,8 @@ The PWM Dashboard GUI (`tools/pwm_dashboard.py`) now supports:
 - Nickname editing (Apply/Reset)
 - Capture edge selection (Rising = high-time duty, Falling = low-time duty)
 - Auto-refresh pauses when capture is off
-
-**Uncommitted changes in this session:**
-- `tools/pwm_dashboard.py` — GUI enhancements (device info, nickname, edge, capture-off polling)
-- `Core/Src/main.c` — INDIRECTTI polarity fix in `FreqCounter_Reconfigure()`
-- `Core/Src/tim.c` — Initial TIM2 config updated to match corrected EDGE_RISING default
-- `docs/PWM_Dashboard_User_Guide.md` — Rewritten for new GUI features
-- `CLAUDE.md` — Added INDIRECTTI polarity convention, PWM Dashboard in key files
-- `README.md` — Added USB interfaces section, PWM Dashboard, fixed 100→96 MHz clock references
+- **Read device state on connect**: sequential SCPI query queue reads capture on/off, edge, PWM1/PWM2 frequency, duty, and enable state — GUI controls sync to device
+- **Checkbox controls**: Capture and PWM Enable use `ttk.Checkbutton` (replacing toggle buttons), reflecting actual device state
 
 Potential next steps:
 - Defer `Config_Save()` from I2C ISR to a FreeRTOS task

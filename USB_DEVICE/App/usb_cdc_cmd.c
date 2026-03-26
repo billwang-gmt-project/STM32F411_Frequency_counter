@@ -54,6 +54,9 @@
 
 #define REG_TRIG_WIDTH   0x56
 
+#define REG_NICKNAME     0x60
+#define NICKNAME_MAX_LEN 16
+
 /* ------------------------------------------------------------------ */
 /*  Line buffer                                                        */
 /* ------------------------------------------------------------------ */
@@ -653,6 +656,65 @@ static uint16_t dispatch_trig(const char *p, uint8_t *resp, uint16_t max)
 }
 
 /* ------------------------------------------------------------------ */
+/*  SYSTem subsystem — NAME handlers                                   */
+/* ------------------------------------------------------------------ */
+
+static uint16_t cmd_syst_name(const char *p, uint8_t *resp, uint16_t max)
+{
+    extern char g_nickname[];
+    if (is_query(p))
+    {
+        return (uint16_t)snprintf((char *)resp, max, "\"%s\"\r\n", g_nickname);
+    }
+    else
+    {
+        const char *arg = skip_spaces(p);
+        if (*arg == '\0') return scpi_error(resp, max);
+
+        /* Strip optional quotes */
+        const char *start = arg;
+        uint8_t len = 0;
+        if (*start == '"') {
+            start++;
+            while (start[len] != '"' && start[len] != '\0' && len < NICKNAME_MAX_LEN)
+                len++;
+        } else {
+            while (start[len] != '\0' && start[len] != '\r' &&
+                   start[len] != '\n' && len < NICKNAME_MAX_LEN)
+                len++;
+            /* Strip trailing whitespace from unquoted input */
+            while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t'))
+                len--;
+        }
+        if (len == 0) return scpi_error(resp, max);
+
+        /* Write via regmap (handles zero-padding) */
+        RegMap_Lock();
+        RegMap_Write(REG_NICKNAME, (const uint8_t *)start, len);
+        RegMap_Unlock();
+
+        return (uint16_t)snprintf((char *)resp, max, "\"%s\"\r\n", g_nickname);
+    }
+}
+
+static uint16_t cmd_syst_name_default(uint8_t *resp, uint16_t max)
+{
+    extern char g_nickname[];
+    uint32_t uid0 = *(uint32_t *)0x1FFF7A10U;
+    uint32_t uid1 = *(uint32_t *)0x1FFF7A14U;
+    uint32_t uid2 = *(uint32_t *)0x1FFF7A18U;
+    char nick[NICKNAME_MAX_LEN + 1];
+    snprintf(nick, sizeof(nick), "%08lX%08lX",
+             (unsigned long)(uid0 + uid2), (unsigned long)uid1);
+
+    RegMap_Lock();
+    RegMap_Write(REG_NICKNAME, (const uint8_t *)nick, NICKNAME_MAX_LEN);
+    RegMap_Unlock();
+
+    return (uint16_t)snprintf((char *)resp, max, "\"%s\"\r\n", g_nickname);
+}
+
+/* ------------------------------------------------------------------ */
 /*  SYSTem subsystem                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -683,6 +745,8 @@ static const char HELP_TEXT[] =
     "  LED:R:PERiod[?] [ms]        - Red LED period\r\n"
     "  LED:R:DUTY[?] [0-100]       - Red LED duty\r\n"
     "  TRIGger:WIDTh[?] [1-1000]   - Trigger pulse width (us)\r\n"
+    "  SYSTem:NAME[?] [\"string\"]    - Device nickname (max 16 chars)\r\n"
+    "  SYSTem:NAME:DEFault          - Reset nickname to serial number\r\n"
     "  SYSTem:VERSion?              - Firmware version\r\n"
     "  SYSTem:HELP?                 - Show this help\r\n"
     "\r\n"
@@ -696,6 +760,18 @@ static uint16_t dispatch_system(const char *p, uint8_t *resp, uint16_t max)
     if (r && is_query(r))
         return (uint16_t)snprintf((char *)resp, max, "%08lX\r\n",
                                   (unsigned long)CFG_FW_VERSION);
+
+    r = scpi_match_kw(p, "name", 4);     /* NAME */
+    if (r) {
+        const char *c2 = skip_colon(r);
+        if (c2) {
+            /* SYSTem:NAME:DEFault */
+            const char *d = scpi_match_kw(c2, "default", 3);  /* DEF */
+            if (d) return cmd_syst_name_default(resp, max);
+            return scpi_error(resp, max);
+        }
+        return cmd_syst_name(r, resp, max);
+    }
 
     r = scpi_match_kw(p, "help", 4);     /* HELP */
     if (r && is_query(r)) {

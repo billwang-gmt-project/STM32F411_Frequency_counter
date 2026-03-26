@@ -70,8 +70,10 @@ Trigger output ───────────── PA7  (pulse on PWM change
 | `0x52` | PWM2_PSC | 2 bytes | Read | Auto-computed prescaler (for debug) |
 | `0x54` | PWM2_ARR | 2 bytes | Read | Auto-computed auto-reload value (for debug) |
 | `0x56` | TRIG_WIDTH | 2 bytes | Read/Write | Trigger pulse width in µs (1–1000, default: 10) |
+| `0x58–0x5F` | *(reserved)* | 8 bytes | Read | Zero-filled |
+| `0x60` | NICKNAME | 16 bytes | Read/Write | Device nickname, NUL-padded ASCII (default: serial number) |
 
-Registers are contiguous in an 88-byte map (0x00–0x57). **Burst reads** are supported — a single read can span multiple registers. The slave builds a snapshot and sends from the start address onward.
+Registers are contiguous in a 112-byte map (0x00–0x6F). **Burst reads** are supported — a single read can span multiple registers. The slave builds a snapshot and sends from the start address onward.
 
 ---
 
@@ -652,7 +654,27 @@ Write 0x13, 0x03   → capture every 8th edge (DIV8)
 
 **Note:** With IC prescaler > 0, the firmware automatically compensates FREQ and DUTY — they always reflect the true single-cycle values. PERIOD and PULSE are raw tick counts spanning N signal cycles (e.g. 8 periods apart for DIV8). To get the single-cycle period: `PERIOD / ic_div` where `ic_div` = 1, 2, 4, or 8.
 
-### 7. Configure LEDs
+### 7. Read / Write Device Nickname
+
+The 16-byte nickname at register `0x60` identifies the device in multi-device setups. Default is the serial number hex string.
+
+**Read nickname (16 bytes):**
+```
+Read 0x60, 16 bytes → "BENCH-1\0\0\0\0\0\0\0\0\0" (NUL-padded)
+```
+
+**Write nickname via I2C (2 bytes per transaction):**
+```
+Write 0x60, [0x44, 0x55]   → nickname[0-1] = "DU"
+Write 0x62, [0x54, 0x2D]   → nickname[2-3] = "T-"
+Write 0x64, [0x31, 0x00]   → nickname[4-5] = "1\0"
+Write 0x66, [0x00, 0x00]   → nickname[6-7] = "\0\0"
+... (write zeros to remaining positions 0x68-0x6E)
+```
+
+**Note:** I2C writes 2 bytes at a time and do NOT auto-clear the remainder. To fully replace a nickname, write all 16 bytes (8 transactions). Save with `Write 0x30, 0x5A`.
+
+### 8. Configure LEDs
 
 Three LEDs are independently configurable:
 
@@ -676,7 +698,7 @@ Write 0x23, [0x01, 0x00]   → 1 ms period
 Write 0x25, 0x64            → 100% duty
 ```
 
-### 8. Control PWM Outputs
+### 9. Control PWM Outputs
 
 Two independent PWM outputs are available:
 
@@ -782,9 +804,9 @@ Every time `CTRL` is written (for either PWM channel), a positive pulse is outpu
 Write 0x56, [0x32, 0x00]   → set trigger pulse width to 50 µs
 ```
 
-### 9. Save Configuration to Flash
+### 10. Save Configuration to Flash
 
-To persist the current edge, prescaler, LED, and **PWM** settings across power cycles:
+To persist the current edge, prescaler, LED, **PWM**, and **nickname** settings across power cycles:
 
 ```
 Write 0x30, 0x5A   → trigger flash save
@@ -794,7 +816,7 @@ Settings saved: EDGE, TIM_PSC, IC_PSC, CAPTURE_CTRL, all LED parameters, all PWM
 
 On next power-up, saved PWM outputs will automatically resume if CTRL bit0 was set when saved.
 
-### 10. Read Back Current Configuration
+### 11. Read Back Current Configuration
 
 Single reads:
 ```

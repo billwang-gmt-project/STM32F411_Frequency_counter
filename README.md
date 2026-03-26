@@ -59,6 +59,8 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 | 0x52 | PWM2_PSC | 2 bytes | Read | Auto-computed prescaler |
 | 0x54 | PWM2_ARR | 2 bytes | Read | Auto-computed auto-reload value |
 | 0x56 | TRIG_WIDTH | 2 bytes | Read/Write | Trigger pulse width in µs (1–1000, default: 10) |
+| 0x58–0x5F | *(reserved)* | 8 bytes | Read | Zero-filled |
+| 0x60 | NICKNAME | 16 bytes | Read/Write | Device nickname, NUL-padded ASCII (default: serial number) |
 
 All multi-byte values are **little-endian** (native ARM byte order).
 
@@ -66,7 +68,7 @@ Timer clock = 100,000,000 / (TIM_PSC + 1). With default TIM_PSC=0, each tick = 1
 
 ### Persistent Configuration
 
-All writable registers (capture config, capture enable, LEDs, PWM outputs, trigger width) can be saved to internal flash by writing `0x5A` to the SAVE_CFG register. Saved settings are automatically restored on power-up — including PWM outputs, which resume automatically if enabled when saved, and capture state. Configuration is stored in flash sector 7 (0x08060000) with a magic number for validation.
+All writable registers (capture config, capture enable, LEDs, PWM outputs, trigger width, nickname) can be saved to internal flash by writing `0x5A` to the SAVE_CFG register. Saved settings are automatically restored on power-up — including PWM outputs, which resume automatically if enabled when saved, and capture state. Configuration is stored in flash sector 7 (0x08060000) with a magic number for validation.
 
 ### Reading Registers
 

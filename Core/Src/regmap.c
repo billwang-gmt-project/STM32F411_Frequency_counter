@@ -54,6 +54,9 @@
 
 #define REG_TRIG_WIDTH   0x56
 
+#define REG_NICKNAME     0x60
+#define NICKNAME_MAX_LEN 16
+
 #define PWM_DUTY_MAX     10000U
 
 /* ---- Extern globals (defined in main.c, no longer static) ---- */
@@ -97,6 +100,9 @@ extern uint16_t g_pwm2_arr;
 /* Trigger config */
 extern uint16_t g_trig_width_us;
 
+/* Device nickname */
+extern char g_nickname[];
+
 /* ---- Extern side-effect functions (defined in main.c) ---- */
 
 extern void FreqCounter_Reconfigure(void);
@@ -122,7 +128,7 @@ uint8_t RegMap_BuildSnapshot(uint8_t start_reg, uint8_t *buf, uint8_t buf_size)
   if (buf_size < map_bytes) map_bytes = buf_size;
 
   /* Work on a local full-map image, then copy the requested window.
-   * Stack cost: 88 bytes — acceptable for any task with >= 256-word stack. */
+   * Stack cost: 112 bytes — acceptable for any task with >= 256-word stack. */
   uint8_t map[REG_MAP_SIZE];
   memset(map, 0, sizeof(map));
 
@@ -172,6 +178,9 @@ uint8_t RegMap_BuildSnapshot(uint8_t start_reg, uint8_t *buf, uint8_t buf_size)
 
   /* 0x56-0x57: trigger config */
   memcpy(&map[0x56], &g_trig_width_us, 2);
+
+  /* 0x60-0x6F: device nickname */
+  memcpy(&map[0x60], g_nickname, NICKNAME_MAX_LEN);
 
   /* Copy the requested window into caller's buffer */
   if (start_reg < REG_MAP_SIZE)
@@ -368,6 +377,19 @@ uint8_t RegMap_Write(uint8_t reg_addr, const uint8_t *data, uint8_t data_len)
   }
 
   default:
+    /* Byte-level writes within nickname region (0x60-0x6F) */
+    if (reg_addr >= REG_NICKNAME && reg_addr < REG_NICKNAME + NICKNAME_MAX_LEN)
+    {
+      uint8_t offset = reg_addr - REG_NICKNAME;
+      uint8_t max_copy = NICKNAME_MAX_LEN - offset;
+      uint8_t copy_len = (data_len > max_copy) ? max_copy : data_len;
+      memcpy(&g_nickname[offset], data, copy_len);
+      /* Zero-pad remainder when writing from start */
+      if (offset == 0 && copy_len < NICKNAME_MAX_LEN)
+        memset(&g_nickname[copy_len], 0, NICKNAME_MAX_LEN - copy_len);
+      g_nickname[NICKNAME_MAX_LEN] = '\0';
+      break;
+    }
     return 1;  /* unknown register */
   }
 

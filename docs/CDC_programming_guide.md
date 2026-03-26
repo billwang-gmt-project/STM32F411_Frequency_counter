@@ -128,8 +128,21 @@ Three LEDs with independent blink period and on-duty:
 
 | Command | Short Form | Description |
 |---------|------------|-------------|
+| `SYSTem:NAME[?]` | `SYST:NAME` | Query or set device nickname (max 16 chars, default: serial number) |
+| `SYSTem:NAME:DEFault` | `SYST:NAME:DEF` | Reset nickname to serial number |
 | `SYSTem:VERSion?` | `SYST:VERS?` | Firmware version (date-encoded, e.g. `26032600`) |
 | `SYSTem:HELP?` | `SYST:HELP?` | Full command reference |
+
+**Device nickname** — Each board has a configurable nickname for multi-device identification. Default is the 16-char hex serial number derived from the STM32 UID.
+
+```
+SYST:NAME?               → "A1B2C3D4E5F6G7H8"   (default = serial)
+SYST:NAME "BENCH-1"      → "BENCH-1"
+SYST:NAME BENCH-1        → "BENCH-1"             (quotes optional)
+SYST:NAME:DEF            → "A1B2C3D4E5F6G7H8"   (reset to serial)
+```
+
+Use `*SAV` to persist the nickname to flash.
 
 ## Error Handling
 

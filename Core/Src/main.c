@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include <stdio.h>
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
@@ -102,6 +103,9 @@
 #define REG_PWM2_ARR     0x54   /* R   2 bytes: auto-computed ARR */
 /* I2C registers - trigger config */
 #define REG_TRIG_WIDTH   0x56   /* R/W 2 bytes: trigger pulse width in us (1-1000) */
+/* I2C registers - device nickname */
+#define REG_NICKNAME     0x60   /* R/W 16 bytes: device nickname, NUL-padded ASCII */
+#define NICKNAME_MAX_LEN 16
 
 /* PWM timer clock (TIM1 APB2, TIM4 APB1 — both 96 MHz with prescaler multiplier) */
 #define PWM_TIMER_CLOCK_HZ  96000000UL
@@ -116,7 +120,7 @@
 /* Flash config storage - Sector 7 (last 128KB sector of STM32F411CE) */
 #define CONFIG_FLASH_SECTOR   FLASH_SECTOR_7
 #define CONFIG_FLASH_ADDR     0x08060000UL
-#define CONFIG_MAGIC          0xDEADBEF4UL
+#define CONFIG_MAGIC          0xDEADBEF5UL
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -141,7 +145,7 @@ uint8_t  g_capture_enabled = 1;  /* 0=stopped, 1=running */
 /* I2C register protocol state */
 static uint8_t i2c_reg_addr = 0xFF;
 static uint8_t i2c_rx_buf[3];           /* reg addr + up to 2 data bytes */
-static uint8_t i2c_tx_buf[88];        /* full register map for burst reads (0x00-0x57) */
+static uint8_t i2c_tx_buf[112];       /* full register map for burst reads (0x00-0x6F) */
 
 /* PWM output - timer handles */
 static TIM_HandleTypeDef htim1_pwm;
@@ -167,6 +171,9 @@ uint16_t g_pwm2_arr = 0;
 
 /* Trigger pulse config */
 uint16_t g_trig_width_us = TRIG_DEFAULT_WIDTH_US;
+
+/* Device nickname (default = serial number hex) */
+char g_nickname[NICKNAME_MAX_LEN + 1] = {0};  /* +1 for NUL terminator */
 
 /* LED parameters (written by I2C/USB, read by LedTask) */
 uint16_t g_led_period_ms = LED_DEFAULT_PERIOD;
@@ -212,6 +219,7 @@ static void PWM_Apply(TIM_HandleTypeDef *htim, uint32_t channel,
 void Trigger_Pulse(void);
 void Config_Save(void);
 static void Config_Load(void);
+static void Nickname_SetDefault(void);
 static void LedTask(void *pvParameters);
 static void MonitorTask(void *pvParameters);
 static void UsbTask(void *pvParameters);
@@ -221,6 +229,17 @@ void PWM_Apply_Ext(uint8_t pwm_num);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static void Nickname_SetDefault(void)
+{
+  uint32_t uid0 = *(uint32_t *)0x1FFF7A10U;
+  uint32_t uid1 = *(uint32_t *)0x1FFF7A14U;
+  uint32_t uid2 = *(uint32_t *)0x1FFF7A18U;
+  uint32_t sn0 = uid0 + uid2;
+  uint32_t sn1 = uid1;
+  snprintf(g_nickname, sizeof(g_nickname), "%08lX%08lX",
+           (unsigned long)sn0, (unsigned long)sn1);
+}
 
 /* USER CODE END 0 */
 
@@ -263,7 +282,8 @@ int main(void)
   PWM1_Init();
   PWM2_Init();
   Trigger_GPIO_Init();
-  Config_Load();
+  Nickname_SetDefault();   /* set default nickname = serial number */
+  Config_Load();           /* overrides with flash-saved nickname if valid */
 
   HAL_NVIC_SetPriority(TIM2_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(TIM2_IRQn);
@@ -678,6 +698,7 @@ typedef struct {
   uint16_t pwm2_duty;
   uint8_t  pwm2_ctrl;
   uint16_t trig_width_us;
+  char     nickname[NICKNAME_MAX_LEN];  /* 16 bytes, NUL-padded */
 } ConfigData_t;
 
 static void Config_Load(void)
@@ -707,6 +728,12 @@ static void Config_Load(void)
   g_pwm2_ctrl      = cfg->pwm2_ctrl;
   g_trig_width_us  = (cfg->trig_width_us >= 1 && cfg->trig_width_us <= 1000)
                        ? cfg->trig_width_us : TRIG_DEFAULT_WIDTH_US;
+
+  /* Nickname: load if valid (non-NUL, non-0xFF first byte) */
+  if (cfg->nickname[0] != '\0' && cfg->nickname[0] != (char)0xFF) {
+    memcpy(g_nickname, cfg->nickname, NICKNAME_MAX_LEN);
+    g_nickname[NICKNAME_MAX_LEN] = '\0';
+  }
 }
 
 void Config_Save(void)
@@ -732,6 +759,7 @@ void Config_Save(void)
   cfg.pwm2_duty       = g_pwm2_duty;
   cfg.pwm2_ctrl       = g_pwm2_ctrl;
   cfg.trig_width_us   = g_trig_width_us;
+  memcpy(cfg.nickname, g_nickname, NICKNAME_MAX_LEN);
 
   HAL_FLASH_Unlock();
 
@@ -845,7 +873,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 
 /* --- I2C Slave Register Protocol --- */
 
-#define REG_MAP_END  0x58  /* one past last register byte (TRIG_WIDTH at 0x56, 2 bytes) */
+#define REG_MAP_END  0x70  /* one past last register byte (NICKNAME at 0x60, 16 bytes) */
 
 static uint8_t I2C_BuildTxBuffer(uint8_t start_reg)
 {
@@ -900,6 +928,9 @@ static uint8_t I2C_BuildTxBuffer(uint8_t start_reg)
 
   /* 0x56-0x57: trigger config */
   memcpy(&i2c_tx_buf[0x56], &g_trig_width_us, 2);
+
+  /* 0x60-0x6F: device nickname */
+  memcpy(&i2c_tx_buf[0x60], g_nickname, NICKNAME_MAX_LEN);
 
   if (start_reg >= REG_MAP_END) return 1; /* fallback: send 1 zero byte */
   return REG_MAP_END - start_reg;
@@ -1076,6 +1107,19 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
   }
 
   default:
+    /* Byte-level writes within nickname region (0x60-0x6F).
+     * I2C sends at most 2 data bytes per transaction, so writing a full
+     * 16-char nickname requires 8 transactions.  Unlike the USB/RegMap_Write
+     * path, partial writes here do NOT zero-pad the remainder — the caller
+     * must explicitly write all 16 bytes to fully replace the nickname. */
+    if (i2c_reg_addr >= REG_NICKNAME && i2c_reg_addr < REG_NICKNAME + NICKNAME_MAX_LEN)
+    {
+      uint8_t offset = i2c_reg_addr - REG_NICKNAME;
+      uint8_t max_copy = NICKNAME_MAX_LEN - offset;
+      uint8_t copy_len = (2 > max_copy) ? max_copy : 2;
+      memcpy(&g_nickname[offset], &i2c_rx_buf[1], copy_len);
+      g_nickname[NICKNAME_MAX_LEN] = '\0';
+    }
     break;
   }
 

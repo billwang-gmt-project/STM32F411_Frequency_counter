@@ -72,7 +72,7 @@ USB CDC/HID → OTG_FS_IRQHandler (priority 6, can call FreeRTOS APIs)
 
 ### USB Composite Device
 
-**CDC** (text console, bulk endpoints): Commands like `freq`, `set pwm1 freq 1000`, `save`, `help`.
+**CDC** (text console, bulk endpoints): SCPI commands like `*IDN?`, `SYST:NAME "BENCH-1"`, `SOUR:PWM1:FREQ 1000`, `*SAV`, `SYST:HELP?`.
 **HID** (binary register access, interrupt endpoints): 64-byte reports with read/write protocol.
 
 Both interfaces share the register map through `regmap.c` with FreeRTOS mutex protection for writes.
@@ -110,6 +110,8 @@ Both interfaces share the register map through `regmap.c` with FreeRTOS mutex pr
 | 0x52 | PWM2_PSC | 2B | R | Auto-computed prescaler (debug) |
 | 0x54 | PWM2_ARR | 2B | R | Auto-computed ARR (debug) |
 | 0x56 | TRIG_WIDTH | 2B | R/W | Trigger pulse width in us (1-1000, default: 10) |
+| 0x58-0x5F | (reserved) | 8B | — | Zero-filled gap |
+| 0x60 | NICKNAME | 16B | R/W | Device nickname, NUL-padded ASCII (default: serial number hex) |
 
 All multi-byte values are little-endian. Config persists across power cycles via flash sector 7.
 
@@ -119,7 +121,7 @@ All multi-byte values are little-endian. Config persists across power cycles via
 
 **Glitch-free updates**: TIM1/TIM4 use ARR preload (ARPE) and OC preload. New PSC/ARR/CCR are written to shadow registers, then a forced update event loads them atomically.
 
-**Burst reads**: Registers are contiguous in an 88-byte map (0x00-0x57). A single read can span multiple registers — the slave builds a snapshot and sends from the start address onward. E.g., read 16 bytes from 0x00 returns PERIOD+FREQ+DUTY+PULSE. The master NACKs/STOPs to end.
+**Burst reads**: Registers are contiguous in a 112-byte map (0x00-0x6F). A single read can span multiple registers — the slave builds a snapshot and sends from the start address onward. E.g., read 16 bytes from 0x00 returns PERIOD+FREQ+DUTY+PULSE. The master NACKs/STOPs to end.
 
 ### Key Code Locations
 
@@ -180,7 +182,7 @@ After CubeMX regeneration, these changes outside USER CODE blocks must be re-app
 - `PWM_ComputeParams()` auto-selects optimal prescaler to maximize ARR (duty resolution) for target frequency
 - `Trigger_Pulse()` outputs a configurable-width pulse on PA7 when PWM parameters are applied via CTRL register write
 - PWM timer handles (`htim1_pwm`, `htim4_pwm`) and all PWM logic are `static` in `main.c` — no external references needed
-- CONFIG_MAGIC bumped to `0xDEADBEF4` when capture_ctrl register added (previously `0xDEADBEF3` for 96MHz clock change) — old config auto-resets to defaults
+- CONFIG_MAGIC bumped to `0xDEADBEF5` when nickname register added (previously `0xDEADBEF4` for capture_ctrl) — old config auto-resets to defaults
 - USB composite device uses I-CUBE-USBD-Composite architecture pattern (https://github.com/alambe94/I-CUBE-USBD-Composite)
 - `regmap.c` is the shared register access layer — I2C, CDC, and HID all go through `RegMap_BuildSnapshot()` / `RegMap_Write()`
 - FreeRTOS mutex protects concurrent register writes from CDC/HID tasks; I2C ISR bypasses mutex (above FreeRTOS threshold, self-serializing)

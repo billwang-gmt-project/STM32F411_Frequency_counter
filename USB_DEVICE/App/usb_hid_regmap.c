@@ -57,8 +57,8 @@ uint8_t HID_ProcessReport(const uint8_t *report, uint8_t *response_buf)
             break;
         }
 
-        /* Validate length: 1 or 2 bytes only */
-        if (data_len < 1 || data_len > 2)
+        /* Validate length: 1..16 bytes (nickname register needs up to 16) */
+        if (data_len < 1 || data_len > 16)
         {
             response_buf[0]  = HID_CMD_ERROR;
             response_buf[1]  = reg_addr;

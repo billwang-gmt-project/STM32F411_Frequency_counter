@@ -6,6 +6,8 @@ Connects to the board via USB CDC serial, controls PWM outputs (PA8/PB6),
 and displays captured frequency/duty measurements from PA15.
 Wire a PWM output to PA15 to verify loopback.
 
+Uses SCPI command protocol (IEEE 488.2 / SCPI subsystem hierarchy).
+
 Requires: pyserial  (pip install pyserial)
 """
 
@@ -41,45 +43,38 @@ REFRESH_INTERVALS = [100, 200, 500, 1000, 2000]
 CONSOLE_MAX_LINES = 5000
 
 # ---------------------------------------------------------------------------
-#  Response Parser
+#  Response Parser (SCPI format)
 # ---------------------------------------------------------------------------
 
-RE_FREQ = re.compile(r"Frequency:\s*(\d+)\s*Hz")
-RE_DUTY = re.compile(r"Duty:\s*(\d+)\.(\d+)%")
-RE_PERIOD = re.compile(r"Period:\s*(\d+)\s*ticks")
-RE_PULSE = re.compile(r"Pulse:\s*(\d+)\s*ticks")
-
-RE_STATUS_BLOCK = re.compile(
-    r"Capture:\s*(?P<capture>on|off)\r?\n"
-    r"Frequency:\s*(?P<freq>\d+)\s*Hz\r?\n"
-    r"Duty:\s*(?P<duty_w>\d+)\.(?P<duty_f>\d+)%\r?\n"
-    r"Period:\s*(?P<period>\d+)\s*ticks\r?\n"
-    r"Pulse:\s*(?P<pulse>\d+)\s*ticks"
+# MEAS:ALL? response: <capture>,<freq>,<duty>,<period>,<pulse>
+# Example: ON,1000,50.00,96000,48000
+RE_MEAS_ALL = re.compile(
+    r"(ON|OFF),(\d+),(\d+)\.(\d+),(\d+),(\d+)"
 )
 
 
 class ResponseParser:
-    """Parse CDC text responses from the frequency counter firmware."""
+    """Parse SCPI responses from the frequency counter firmware."""
 
     @staticmethod
-    def parse_status(text):
-        """Return (dict, end_index) for the last status block, or (None, -1).
+    def parse_meas_all(text):
+        """Return (dict, end_index) for the last MEAS:ALL? response, or (None, -1).
 
         Uses the *last* match so the display always shows the most recent
         measurement when multiple responses arrive between poll cycles.
         """
         last_match = None
-        for m in RE_STATUS_BLOCK.finditer(text):
+        for m in RE_MEAS_ALL.finditer(text):
             last_match = m
         if not last_match:
             return None, -1
         result = {
-            "capture_on": last_match.group("capture") == "on",
-            "freq_hz": int(last_match.group("freq")),
-            "duty_pct": int(last_match.group("duty_w"))
-            + int(last_match.group("duty_f")) / 100.0,
-            "period_ticks": int(last_match.group("period")),
-            "pulse_ticks": int(last_match.group("pulse")),
+            "capture_on": last_match.group(1) == "ON",
+            "freq_hz": int(last_match.group(2)),
+            "duty_pct": int(last_match.group(3))
+            + int(last_match.group(4)) / 100.0,
+            "period_ticks": int(last_match.group(5)),
+            "pulse_ticks": int(last_match.group(6)),
         }
         return result, last_match.end()
 
@@ -191,7 +186,7 @@ class PwmControlPanel(ttk.LabelFrame):
 
     def __init__(self, parent, channel_name, pin_name, send_cmd_cb, **kwargs):
         super().__init__(parent, text=f"  {channel_name} ({pin_name})  ", **kwargs)
-        self._ch = channel_name.lower()  # "pwm1" or "pwm2"
+        self._ch = channel_name.upper()  # "PWM1" or "PWM2"
         self._send = send_cmd_cb
         self._enabled = False
         self._freq_debounce_id = None
@@ -325,9 +320,7 @@ class PwmControlPanel(ttk.LabelFrame):
         self._apply_pwm()
 
     def _apply_pwm(self):
-        """Send staged freq + duty + enable to device.
-        Only sends commands when enabled — no point staging for a disabled channel.
-        """
+        """Send staged freq + duty + enable to device via SCPI commands."""
         if not self._enabled:
             return
         try:
@@ -341,9 +334,9 @@ class PwmControlPanel(ttk.LabelFrame):
         duty_centipct = int(round(duty_pct * 100))
         duty_centipct = max(0, min(10000, duty_centipct))
 
-        self._send(f"set {self._ch} freq {freq_hz}\n")
-        self._send(f"set {self._ch} duty {duty_centipct}\n")
-        self._send(f"set {self._ch} enable 1\n")
+        self._send(f"SOUR:{self._ch}:FREQ {freq_hz}\n")
+        self._send(f"SOUR:{self._ch}:DUTY {duty_centipct}\n")
+        self._send(f"SOUR:{self._ch}:ENAB 1\n")
 
     def _toggle_enable(self):
         self._enabled = not self._enabled
@@ -353,7 +346,7 @@ class PwmControlPanel(ttk.LabelFrame):
         if self._enabled:
             self._apply_pwm()
         else:
-            self._send(f"set {self._ch} enable 0\n")
+            self._send(f"SOUR:{self._ch}:ENAB 0\n")
 
     # -- state get/set for persistence --
 
@@ -614,7 +607,7 @@ class PwmDashboardApp(tk.Tk):
     # --- Console Panel ---
 
     def _build_console_panel(self):
-        frame = ttk.LabelFrame(self, text="  CDC Console  ")
+        frame = ttk.LabelFrame(self, text="  CDC Console (SCPI)  ")
         frame.grid(row=3, column=0, sticky="nsew", padx=6, pady=(2, 6))
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
@@ -724,7 +717,7 @@ class PwmDashboardApp(tk.Tk):
         self.after(50, self._poll_rx)
 
     def _try_parse_measurements(self):
-        result, end = ResponseParser.parse_status(self._rx_buffer)
+        result, end = ResponseParser.parse_meas_all(self._rx_buffer)
         if result:
             self._freq_label.configure(
                 text=f"Freq: {result['freq_hz']} Hz"
@@ -766,18 +759,18 @@ class PwmDashboardApp(tk.Tk):
 
     def _do_refresh(self):
         if self._serial.is_connected():
-            self._send_cmd("status\n")
+            self._send_cmd("MEAS:ALL?\n")
         if self._auto_refresh.get() and self._serial.is_connected():
             ms = self._get_refresh_ms()
             self._refresh_after_id = self.after(ms, self._do_refresh)
 
     def _manual_refresh(self):
         if self._serial.is_connected():
-            self._send_cmd("status\n")
+            self._send_cmd("MEAS:ALL?\n")
 
     def _toggle_capture(self):
         new_state = not self._capture_on
-        cmd = "set capture on\n" if new_state else "set capture off\n"
+        cmd = "CAPT:ENAB ON\n" if new_state else "CAPT:ENAB OFF\n"
         self._send_cmd(cmd)
         self._capture_on = new_state
         self._update_capture_ui()

@@ -1,9 +1,12 @@
 /**
  * @file    usb_cdc_cmd.c
- * @brief   CDC serial console command parser for the frequency counter.
+ * @brief   SCPI command parser for the frequency counter CDC console.
  *
- * Accumulates incoming bytes into a line buffer. On CR or LF the
- * completed line is parsed and a human-readable response is built.
+ * Implements IEEE 488.2 common commands (*IDN?, *SAV, *RST) and a
+ * SCPI-style subsystem hierarchy (MEASure, CAPture, SOURce, LED,
+ * TRIGger, SYSTem).  Both long and abbreviated keyword forms are
+ * accepted, case-insensitive.
+ *
  * All register access goes through regmap.h so this module never
  * touches hardware directly.
  */
@@ -11,6 +14,8 @@
 #include "usb_cdc_cmd.h"
 #include "cdc_fifo.h"
 #include "regmap.h"
+#include "config.h"
+#include "main.h"          /* NVIC_SystemReset() via CMSIS core_cm4.h */
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -84,95 +89,160 @@ static const char *skip_spaces(const char *s)
     return s;
 }
 
-/** Case-insensitive prefix match. Returns pointer past the prefix or NULL. */
-static const char *match_prefix(const char *line, const char *prefix)
+/** tolower without ctype */
+static char to_lower(char c)
 {
-    while (*prefix) {
-        char a = *line;
-        char b = *prefix;
-        /* tolower without pulling in ctype */
-        if (a >= 'A' && a <= 'Z') a += 32;
-        if (b >= 'A' && b <= 'Z') b += 32;
-        if (a != b) return NULL;
-        line++;
-        prefix++;
-    }
-    return line;
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Command handlers — each returns bytes written into resp[]          */
+/*  SCPI keyword matcher                                               */
 /* ------------------------------------------------------------------ */
 
-static uint16_t cmd_freq(uint8_t *resp, uint16_t max)
+/**
+ * Match a SCPI keyword with abbreviation support.
+ *
+ * @param line     Input string (consumed from this point)
+ * @param full     Full keyword in lowercase (e.g. "frequency")
+ * @param min_len  Minimum chars for the abbreviated form (e.g. 4 for FREQuency)
+ * @return         Pointer past the matched keyword, or NULL on mismatch.
+ *
+ * Accepts any prefix of `full` that is >= min_len chars, case-insensitive.
+ * The character after the match must be a delimiter (: ? space NUL).
+ */
+static const char *scpi_match_kw(const char *line, const char *full, uint8_t min_len)
+{
+    uint8_t i = 0;
+    while (full[i] && to_lower(line[i]) == full[i])
+        i++;
+
+    /* Must have matched at least min_len chars */
+    if (i < min_len) return NULL;
+
+    /* If we stopped before the end of `full`, the input must have stopped
+     * at a delimiter — otherwise it's a partial non-matching word. */
+    char next = line[i];
+    if (full[i] != '\0') {
+        /* Partial match — next char must be delimiter */
+        if (next != ':' && next != '?' && next != ' ' && next != '\0')
+            return NULL;
+    }
+
+    return &line[i];
+}
+
+/** Skip a colon separator. Returns pointer past ':', or NULL if not ':'. */
+static const char *skip_colon(const char *p)
+{
+    return (*p == ':') ? p + 1 : NULL;
+}
+
+/** Check if the remaining line is a query ('?' optionally followed by space/NUL). */
+static int is_query(const char *p)
+{
+    return (*p == '?');
+}
+
+/** Extract argument after whitespace. Returns pointer to first non-space char. */
+static const char *get_arg(const char *p)
+{
+    return skip_spaces(p);
+}
+
+/* ------------------------------------------------------------------ */
+/*  SCPI error response                                                */
+/* ------------------------------------------------------------------ */
+
+static uint16_t scpi_error(uint8_t *resp, uint16_t max)
+{
+    return (uint16_t)snprintf((char *)resp, max,
+        "-100,\"Command error\"\r\n");
+}
+
+/* ------------------------------------------------------------------ */
+/*  IEEE 488.2 common commands                                         */
+/* ------------------------------------------------------------------ */
+
+static uint16_t cmd_idn(uint8_t *resp, uint16_t max)
+{
+    uint32_t uid0 = *(uint32_t *)0x1FFF7A10U;
+    uint32_t uid1 = *(uint32_t *)0x1FFF7A14U;
+    uint32_t uid2 = *(uint32_t *)0x1FFF7A18U;
+    uint32_t sn0 = uid0 + uid2;
+    uint32_t sn1 = uid1;
+
+    return (uint16_t)snprintf((char *)resp, max,
+        "%s,%s,%08lX%08lX,%08lX\r\n",
+        CFG_MANUFACTURER, CFG_MODEL,
+        (unsigned long)sn0, (unsigned long)sn1,
+        (unsigned long)CFG_FW_VERSION);
+}
+
+static uint16_t cmd_sav(uint8_t *resp, uint16_t max)
+{
+    uint8_t key = SAVE_CFG_KEY;
+    RegMap_Lock();
+    RegMap_Write(REG_SAVE_CFG, &key, 1);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "OK\r\n");
+}
+
+static uint16_t cmd_rst(uint8_t *resp, uint16_t max)
+{
+    (void)resp; (void)max;
+    NVIC_SystemReset();
+    /* Never reached */
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  MEASure subsystem                                                  */
+/* ------------------------------------------------------------------ */
+
+static uint16_t cmd_meas_freq(uint8_t *resp, uint16_t max)
 {
     uint8_t snap[4];
     RegMap_Lock();
     RegMap_BuildSnapshot(REG_FREQ, snap, 4);
     RegMap_Unlock();
-    uint32_t hz = read_u32(snap);
-    return (uint16_t)snprintf((char *)resp, max, "Frequency: %lu Hz\r\n",
-                              (unsigned long)hz);
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n",
+                              (unsigned long)read_u32(snap));
 }
 
-static uint16_t cmd_duty(uint8_t *resp, uint16_t max)
+static uint16_t cmd_meas_duty(uint8_t *resp, uint16_t max)
 {
     uint8_t snap[4];
     RegMap_Lock();
     RegMap_BuildSnapshot(REG_DUTY, snap, 4);
     RegMap_Unlock();
     uint32_t cp = read_u32(snap);
-    uint32_t whole = cp / 100;
-    uint32_t frac  = cp % 100;
-    return (uint16_t)snprintf((char *)resp, max, "Duty: %lu.%02lu%%\r\n",
-                              (unsigned long)whole, (unsigned long)frac);
+    return (uint16_t)snprintf((char *)resp, max, "%lu.%02lu\r\n",
+                              (unsigned long)(cp / 100),
+                              (unsigned long)(cp % 100));
 }
 
-static uint16_t cmd_period(uint8_t *resp, uint16_t max)
+static uint16_t cmd_meas_period(uint8_t *resp, uint16_t max)
 {
     uint8_t snap[4];
     RegMap_Lock();
     RegMap_BuildSnapshot(REG_PERIOD, snap, 4);
     RegMap_Unlock();
-    uint32_t t = read_u32(snap);
-    return (uint16_t)snprintf((char *)resp, max, "Period: %lu ticks\r\n",
-                              (unsigned long)t);
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n",
+                              (unsigned long)read_u32(snap));
 }
 
-static uint16_t cmd_pulse(uint8_t *resp, uint16_t max)
+static uint16_t cmd_meas_pulse(uint8_t *resp, uint16_t max)
 {
     uint8_t snap[4];
     RegMap_Lock();
     RegMap_BuildSnapshot(REG_PULSE, snap, 4);
     RegMap_Unlock();
-    uint32_t p = read_u32(snap);
-    return (uint16_t)snprintf((char *)resp, max, "Pulse: %lu ticks\r\n",
-                              (unsigned long)p);
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n",
+                              (unsigned long)read_u32(snap));
 }
 
-static uint16_t cmd_edge(uint8_t *resp, uint16_t max)
+static uint16_t cmd_meas_all(uint8_t *resp, uint16_t max)
 {
-    uint8_t snap[1];
-    RegMap_Lock();
-    RegMap_BuildSnapshot(REG_EDGE, snap, 1);
-    RegMap_Unlock();
-    return (uint16_t)snprintf((char *)resp, max, "Edge: %s\r\n",
-                              snap[0] ? "falling" : "rising");
-}
-
-static uint16_t cmd_capture(uint8_t *resp, uint16_t max)
-{
-    uint8_t snap[1];
-    RegMap_Lock();
-    RegMap_BuildSnapshot(REG_CAPTURE_CTRL, snap, 1);
-    RegMap_Unlock();
-    return (uint16_t)snprintf((char *)resp, max, "Capture: %s\r\n",
-                              snap[0] ? "on" : "off");
-}
-
-static uint16_t cmd_status(uint8_t *resp, uint16_t max)
-{
-    /* Read first 16 bytes: PERIOD(4) + FREQ(4) + DUTY(4) + PULSE(4) */
     uint8_t snap[16];
     uint8_t cap_snap[1];
     RegMap_Lock();
@@ -185,394 +255,536 @@ static uint16_t cmd_status(uint8_t *resp, uint16_t max)
     uint32_t duty   = read_u32(&snap[8]);
     uint32_t pulse  = read_u32(&snap[12]);
 
-    uint32_t d_whole = duty / 100;
-    uint32_t d_frac  = duty % 100;
-
     return (uint16_t)snprintf((char *)resp, max,
-        "Capture: %s\r\n"
-        "Frequency: %lu Hz\r\n"
-        "Duty: %lu.%02lu%%\r\n"
-        "Period: %lu ticks\r\n"
-        "Pulse: %lu ticks\r\n",
-        cap_snap[0] ? "on" : "off",
+        "%s,%lu,%lu.%02lu,%lu,%lu\r\n",
+        cap_snap[0] ? "ON" : "OFF",
         (unsigned long)freq,
-        (unsigned long)d_whole, (unsigned long)d_frac,
+        (unsigned long)(duty / 100), (unsigned long)(duty % 100),
         (unsigned long)period,
         (unsigned long)pulse);
 }
 
+static uint16_t dispatch_meas(const char *p, uint8_t *resp, uint16_t max)
+{
+    const char *r;
+
+    r = scpi_match_kw(p, "frequency", 4); /* FREQ */
+    if (r && is_query(r)) return cmd_meas_freq(resp, max);
+
+    r = scpi_match_kw(p, "duty", 4);      /* DUTY */
+    if (r && is_query(r)) return cmd_meas_duty(resp, max);
+
+    r = scpi_match_kw(p, "period", 3);    /* PER */
+    if (r && is_query(r)) return cmd_meas_period(resp, max);
+
+    r = scpi_match_kw(p, "pulse", 4);     /* PULS */
+    if (r && is_query(r)) return cmd_meas_pulse(resp, max);
+
+    r = scpi_match_kw(p, "all", 3);       /* ALL */
+    if (r && is_query(r)) return cmd_meas_all(resp, max);
+
+    return scpi_error(resp, max);
+}
+
 /* ------------------------------------------------------------------ */
-/*  "set" sub-commands                                                 */
+/*  CAPture subsystem                                                  */
 /* ------------------------------------------------------------------ */
 
-static uint16_t cmd_set_edge(const char *arg, uint8_t *resp, uint16_t max)
+static uint16_t cmd_capt_edge(const char *p, uint8_t *resp, uint16_t max)
 {
-    unsigned long val = strtoul(arg, NULL, 0);
-    if (val > 1) {
-        return (uint16_t)snprintf((char *)resp, max,
-            "Error: edge must be 0 (rising) or 1 (falling)\r\n");
+    if (is_query(p)) {
+        uint8_t snap[1];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(REG_EDGE, snap, 1);
+        RegMap_Unlock();
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n", snap[0]);
     }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    if (val > 1) return scpi_error(resp, max);
     uint8_t v = (uint8_t)val;
     RegMap_Lock();
     RegMap_Write(REG_EDGE, &v, 1);
     RegMap_Unlock();
-    return (uint16_t)snprintf((char *)resp, max, "Edge: %s\r\n",
-                              v ? "falling" : "rising");
+    return (uint16_t)snprintf((char *)resp, max, "%u\r\n", v);
 }
 
-static uint16_t cmd_set_tim_psc(const char *arg, uint8_t *resp, uint16_t max)
+static uint16_t cmd_capt_enable(const char *p, uint8_t *resp, uint16_t max)
 {
-    unsigned long val = strtoul(arg, NULL, 0);
-    if (val > 65535) {
-        return (uint16_t)snprintf((char *)resp, max,
-            "Error: tim_psc must be 0-65535\r\n");
+    if (is_query(p)) {
+        uint8_t snap[1];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(REG_CAPTURE_CTRL, snap, 1);
+        RegMap_Unlock();
+        return (uint16_t)snprintf((char *)resp, max, "%s\r\n",
+                                  snap[0] ? "ON" : "OFF");
     }
-    uint8_t buf[2];
-    write_u16(buf, (uint16_t)val);
-    RegMap_Lock();
-    RegMap_Write(REG_TIM_PSC, buf, 2);
-    RegMap_Unlock();
-    return (uint16_t)snprintf((char *)resp, max, "Timer PSC: %lu\r\n",
-                              (unsigned long)val);
-}
-
-static uint16_t cmd_set_ic_psc(const char *arg, uint8_t *resp, uint16_t max)
-{
-    unsigned long val = strtoul(arg, NULL, 0);
-    if (val > 3) {
-        return (uint16_t)snprintf((char *)resp, max,
-            "Error: ic_psc must be 0-3\r\n");
-    }
-    uint8_t v = (uint8_t)val;
-    RegMap_Lock();
-    RegMap_Write(REG_IC_PSC, &v, 1);
-    RegMap_Unlock();
-    return (uint16_t)snprintf((char *)resp, max, "IC PSC: %lu\r\n",
-                              (unsigned long)val);
-}
-
-static uint16_t cmd_set_capture(const char *arg, uint8_t *resp, uint16_t max)
-{
+    const char *arg = get_arg(p);
     uint8_t v;
-    if (match_prefix(arg, "on") && (arg[2] == '\0' || arg[2] == ' '))
+    if (to_lower(arg[0]) == 'o' && to_lower(arg[1]) == 'n' &&
+        (arg[2] == '\0' || arg[2] == ' '))
         v = 1;
-    else if (match_prefix(arg, "off") && (arg[3] == '\0' || arg[3] == ' '))
+    else if (to_lower(arg[0]) == 'o' && to_lower(arg[1]) == 'f' &&
+             to_lower(arg[2]) == 'f' && (arg[3] == '\0' || arg[3] == ' '))
         v = 0;
     else {
         unsigned long val = strtoul(arg, NULL, 0);
-        if (val > 1)
-            return (uint16_t)snprintf((char *)resp, max,
-                "Error: capture must be on/off or 0/1\r\n");
+        if (val > 1) return scpi_error(resp, max);
         v = (uint8_t)val;
     }
     RegMap_Lock();
     RegMap_Write(REG_CAPTURE_CTRL, &v, 1);
     RegMap_Unlock();
-    return (uint16_t)snprintf((char *)resp, max, "Capture: %s\r\n",
-                              v ? "on" : "off");
+    return (uint16_t)snprintf((char *)resp, max, "%s\r\n",
+                              v ? "ON" : "OFF");
 }
 
-static uint16_t cmd_set_trig_width(const char *arg, uint8_t *resp, uint16_t max)
+static uint16_t cmd_capt_tim_psc(const char *p, uint8_t *resp, uint16_t max)
 {
-    unsigned long val = strtoul(arg, NULL, 0);
-    if (val < 1 || val > 1000) {
-        return (uint16_t)snprintf((char *)resp, max,
-            "Error: trig_width must be 1-1000\r\n");
+    if (is_query(p)) {
+        uint8_t snap[2];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(REG_TIM_PSC, snap, 2);
+        RegMap_Unlock();
+        uint16_t val = (uint16_t)snap[0] | ((uint16_t)snap[1] << 8);
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n", val);
     }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    if (val > 65535) return scpi_error(resp, max);
+    uint8_t buf[2];
+    write_u16(buf, (uint16_t)val);
+    RegMap_Lock();
+    RegMap_Write(REG_TIM_PSC, buf, 2);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n", val);
+}
+
+static uint16_t cmd_capt_ic_psc(const char *p, uint8_t *resp, uint16_t max)
+{
+    if (is_query(p)) {
+        uint8_t snap[1];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(REG_IC_PSC, snap, 1);
+        RegMap_Unlock();
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n", snap[0]);
+    }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    if (val > 3) return scpi_error(resp, max);
+    uint8_t v = (uint8_t)val;
+    RegMap_Lock();
+    RegMap_Write(REG_IC_PSC, &v, 1);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "%u\r\n", v);
+}
+
+static uint16_t dispatch_capt(const char *p, uint8_t *resp, uint16_t max)
+{
+    const char *r;
+
+    r = scpi_match_kw(p, "edge", 4);     /* EDGE */
+    if (r) return cmd_capt_edge(r, resp, max);
+
+    r = scpi_match_kw(p, "enable", 4);   /* ENAB */
+    if (r) return cmd_capt_enable(r, resp, max);
+
+    /* TIM:PSC — two-level */
+    r = scpi_match_kw(p, "tim", 3);      /* TIM */
+    if (r) {
+        const char *c = skip_colon(r);
+        if (c) {
+            const char *r2 = scpi_match_kw(c, "psc", 3); /* PSC */
+            if (r2) return cmd_capt_tim_psc(r2, resp, max);
+        }
+        return scpi_error(resp, max);
+    }
+
+    /* IC:PSC — two-level */
+    r = scpi_match_kw(p, "ic", 2);       /* IC */
+    if (r) {
+        const char *c = skip_colon(r);
+        if (c) {
+            const char *r2 = scpi_match_kw(c, "psc", 3); /* PSC */
+            if (r2) return cmd_capt_ic_psc(r2, resp, max);
+        }
+        return scpi_error(resp, max);
+    }
+
+    return scpi_error(resp, max);
+}
+
+/* ------------------------------------------------------------------ */
+/*  SOURce subsystem (PWM outputs)                                     */
+/* ------------------------------------------------------------------ */
+
+static uint16_t cmd_pwm_freq(const char *p, uint8_t *resp, uint16_t max,
+                              uint8_t reg_l, uint8_t reg_h)
+{
+    if (is_query(p)) {
+        uint8_t snap_l[2], snap_h[2];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(reg_l, snap_l, 2);
+        RegMap_BuildSnapshot(reg_h, snap_h, 2);
+        RegMap_Unlock();
+        uint32_t hz = (uint16_t)(snap_l[0] | (snap_l[1] << 8))
+                    | ((uint32_t)(snap_h[0] | (snap_h[1] << 8)) << 16);
+        return (uint16_t)snprintf((char *)resp, max, "%lu\r\n",
+                                  (unsigned long)hz);
+    }
+    const char *arg = get_arg(p);
+    unsigned long hz = strtoul(arg, NULL, 0);
+    uint16_t lo = (uint16_t)(hz & 0xFFFF);
+    uint16_t hi = (uint16_t)((hz >> 16) & 0xFFFF);
+    uint8_t buf[2];
+    RegMap_Lock();
+    write_u16(buf, lo);
+    RegMap_Write(reg_l, buf, 2);
+    write_u16(buf, hi);
+    RegMap_Write(reg_h, buf, 2);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n",
+                              (unsigned long)hz);
+}
+
+static uint16_t cmd_pwm_duty(const char *p, uint8_t *resp, uint16_t max,
+                              uint8_t reg)
+{
+    if (is_query(p)) {
+        uint8_t snap[2];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(reg, snap, 2);
+        RegMap_Unlock();
+        uint16_t val = (uint16_t)snap[0] | ((uint16_t)snap[1] << 8);
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n", val);
+    }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    if (val > 10000) return scpi_error(resp, max);
+    uint8_t buf[2];
+    write_u16(buf, (uint16_t)val);
+    RegMap_Lock();
+    RegMap_Write(reg, buf, 2);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n", val);
+}
+
+static uint16_t cmd_pwm_enable(const char *p, uint8_t *resp, uint16_t max,
+                                uint8_t reg)
+{
+    if (is_query(p)) {
+        uint8_t snap[1];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(reg, snap, 1);
+        RegMap_Unlock();
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n",
+                                  snap[0] & 0x01);
+    }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    uint8_t v = val ? 1 : 0;
+    RegMap_Lock();
+    RegMap_Write(reg, &v, 1);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "%u\r\n", v);
+}
+
+static uint16_t dispatch_pwm(const char *p, uint8_t *resp, uint16_t max,
+                              uint8_t reg_fl, uint8_t reg_fh,
+                              uint8_t reg_duty, uint8_t reg_ctrl)
+{
+    const char *r;
+
+    r = scpi_match_kw(p, "frequency", 4); /* FREQ */
+    if (r) return cmd_pwm_freq(r, resp, max, reg_fl, reg_fh);
+
+    r = scpi_match_kw(p, "duty", 4);      /* DUTY */
+    if (r) return cmd_pwm_duty(r, resp, max, reg_duty);
+
+    r = scpi_match_kw(p, "enable", 4);    /* ENAB */
+    if (r) return cmd_pwm_enable(r, resp, max, reg_ctrl);
+
+    return scpi_error(resp, max);
+}
+
+static uint16_t dispatch_source(const char *p, uint8_t *resp, uint16_t max)
+{
+    const char *r, *c;
+
+    r = scpi_match_kw(p, "pwm1", 4);     /* PWM1 */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_pwm(c, resp, max,
+                    REG_PWM1_FREQ_L, REG_PWM1_FREQ_H,
+                    REG_PWM1_DUTY, REG_PWM1_CTRL);
+        return scpi_error(resp, max);
+    }
+
+    r = scpi_match_kw(p, "pwm2", 4);     /* PWM2 */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_pwm(c, resp, max,
+                    REG_PWM2_FREQ_L, REG_PWM2_FREQ_H,
+                    REG_PWM2_DUTY, REG_PWM2_CTRL);
+        return scpi_error(resp, max);
+    }
+
+    return scpi_error(resp, max);
+}
+
+/* ------------------------------------------------------------------ */
+/*  LED subsystem                                                      */
+/* ------------------------------------------------------------------ */
+
+static uint16_t cmd_led_period(const char *p, uint8_t *resp, uint16_t max,
+                                uint8_t reg)
+{
+    if (is_query(p)) {
+        uint8_t snap[2];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(reg, snap, 2);
+        RegMap_Unlock();
+        uint16_t val = (uint16_t)snap[0] | ((uint16_t)snap[1] << 8);
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n", val);
+    }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    if (val == 0 || val > 65535) return scpi_error(resp, max);
+    uint8_t buf[2];
+    write_u16(buf, (uint16_t)val);
+    RegMap_Lock();
+    RegMap_Write(reg, buf, 2);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n", val);
+}
+
+static uint16_t cmd_led_duty(const char *p, uint8_t *resp, uint16_t max,
+                              uint8_t reg)
+{
+    if (is_query(p)) {
+        uint8_t snap[1];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(reg, snap, 1);
+        RegMap_Unlock();
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n", snap[0]);
+    }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    if (val > 100) return scpi_error(resp, max);
+    uint8_t v = (uint8_t)val;
+    RegMap_Lock();
+    RegMap_Write(reg, &v, 1);
+    RegMap_Unlock();
+    return (uint16_t)snprintf((char *)resp, max, "%u\r\n", v);
+}
+
+static uint16_t dispatch_led_channel(const char *p, uint8_t *resp, uint16_t max,
+                                      uint8_t reg_per, uint8_t reg_duty)
+{
+    const char *r;
+
+    r = scpi_match_kw(p, "period", 3);   /* PER */
+    if (r) return cmd_led_period(r, resp, max, reg_per);
+
+    r = scpi_match_kw(p, "duty", 4);     /* DUTY */
+    if (r) return cmd_led_duty(r, resp, max, reg_duty);
+
+    return scpi_error(resp, max);
+}
+
+static uint16_t dispatch_led(const char *p, uint8_t *resp, uint16_t max)
+{
+    const char *r, *c;
+
+    /* LED:G: ... (must check before PER/DUTY to avoid prefix clash) */
+    r = scpi_match_kw(p, "g", 1);        /* G */
+    if (r && *r == ':') {
+        c = skip_colon(r);
+        if (c) return dispatch_led_channel(c, resp, max,
+                    REG_LED_G_PERIOD, REG_LED_G_DUTY);
+    }
+
+    /* LED:R: ... */
+    r = scpi_match_kw(p, "r", 1);        /* R */
+    if (r && *r == ':') {
+        c = skip_colon(r);
+        if (c) return dispatch_led_channel(c, resp, max,
+                    REG_LED_R_PERIOD, REG_LED_R_DUTY);
+    }
+
+    /* LED:PER / LED:DUTY — default (status LED) */
+    return dispatch_led_channel(p, resp, max,
+                REG_LED_PERIOD, REG_LED_DUTY);
+}
+
+/* ------------------------------------------------------------------ */
+/*  TRIGger subsystem                                                  */
+/* ------------------------------------------------------------------ */
+
+static uint16_t cmd_trig_width(const char *p, uint8_t *resp, uint16_t max)
+{
+    if (is_query(p)) {
+        uint8_t snap[2];
+        RegMap_Lock();
+        RegMap_BuildSnapshot(REG_TRIG_WIDTH, snap, 2);
+        RegMap_Unlock();
+        uint16_t val = (uint16_t)snap[0] | ((uint16_t)snap[1] << 8);
+        return (uint16_t)snprintf((char *)resp, max, "%u\r\n", val);
+    }
+    const char *arg = get_arg(p);
+    unsigned long val = strtoul(arg, NULL, 0);
+    if (val < 1 || val > 1000) return scpi_error(resp, max);
     uint8_t buf[2];
     write_u16(buf, (uint16_t)val);
     RegMap_Lock();
     RegMap_Write(REG_TRIG_WIDTH, buf, 2);
     RegMap_Unlock();
-    return (uint16_t)snprintf((char *)resp, max, "Trigger width: %lu us\r\n",
-                              (unsigned long)val);
+    return (uint16_t)snprintf((char *)resp, max, "%lu\r\n", val);
 }
 
-/* Generic LED period/duty handler.
- * reg_period: register address for the 2-byte period
- * reg_duty:   register address for the 1-byte duty
- * name:       display name (e.g. "LED", "LED_G", "LED_R") */
-static uint16_t cmd_set_led_generic(const char *subcmd, const char *name,
-                                    uint8_t reg_period, uint8_t reg_duty,
-                                    uint8_t *resp, uint16_t max)
+static uint16_t dispatch_trig(const char *p, uint8_t *resp, uint16_t max)
 {
-    const char *p;
+    const char *r;
 
-    p = match_prefix(subcmd, "period");
-    if (p) {
-        p = skip_spaces(p);
-        unsigned long val = strtoul(p, NULL, 0);
-        if (val > 65535) {
-            return (uint16_t)snprintf((char *)resp, max,
-                "Error: period must be 0-65535\r\n");
-        }
-        uint8_t buf[2];
-        write_u16(buf, (uint16_t)val);
-        RegMap_Lock();
-        RegMap_Write(reg_period, buf, 2);
-        RegMap_Unlock();
-        return (uint16_t)snprintf((char *)resp, max,
-            "%s period: %lu ms\r\n", name, (unsigned long)val);
-    }
+    r = scpi_match_kw(p, "width", 4);    /* WIDT */
+    if (r) return cmd_trig_width(r, resp, max);
 
-    p = match_prefix(subcmd, "duty");
-    if (p) {
-        p = skip_spaces(p);
-        unsigned long val = strtoul(p, NULL, 0);
-        if (val > 100) {
-            return (uint16_t)snprintf((char *)resp, max,
-                "Error: duty must be 0-100\r\n");
-        }
-        uint8_t v = (uint8_t)val;
-        RegMap_Lock();
-        RegMap_Write(reg_duty, &v, 1);
-        RegMap_Unlock();
-        return (uint16_t)snprintf((char *)resp, max,
-            "%s duty: %lu%%\r\n", name, (unsigned long)val);
-    }
-
-    return (uint16_t)snprintf((char *)resp, max,
-        "Error: expected 'period <ms>' or 'duty <0-100>'\r\n");
-}
-
-/* Generic PWM freq/duty/enable handler.
- * reg_freq_l, reg_freq_h, reg_duty, reg_ctrl are the register addresses. */
-static uint16_t cmd_set_pwm_generic(const char *subcmd, const char *name,
-                                    uint8_t reg_freq_l, uint8_t reg_freq_h,
-                                    uint8_t reg_duty, uint8_t reg_ctrl,
-                                    uint8_t *resp, uint16_t max)
-{
-    const char *p;
-
-    p = match_prefix(subcmd, "freq");
-    if (p) {
-        p = skip_spaces(p);
-        unsigned long hz = strtoul(p, NULL, 0);
-        uint16_t lo = (uint16_t)(hz & 0xFFFF);
-        uint16_t hi = (uint16_t)((hz >> 16) & 0xFFFF);
-        uint8_t buf[2];
-        RegMap_Lock();
-        write_u16(buf, lo);
-        RegMap_Write(reg_freq_l, buf, 2);
-        write_u16(buf, hi);
-        RegMap_Write(reg_freq_h, buf, 2);
-        RegMap_Unlock();
-        return (uint16_t)snprintf((char *)resp, max,
-            "%s freq staged: %lu Hz\r\n", name, (unsigned long)hz);
-    }
-
-    p = match_prefix(subcmd, "duty");
-    if (p) {
-        p = skip_spaces(p);
-        unsigned long val = strtoul(p, NULL, 0);
-        if (val > 10000) {
-            return (uint16_t)snprintf((char *)resp, max,
-                "Error: duty must be 0-10000 (0.01%% units)\r\n");
-        }
-        uint8_t buf[2];
-        write_u16(buf, (uint16_t)val);
-        RegMap_Lock();
-        RegMap_Write(reg_duty, buf, 2);
-        RegMap_Unlock();
-        return (uint16_t)snprintf((char *)resp, max,
-            "%s duty staged: %lu\r\n", name, (unsigned long)val);
-    }
-
-    p = match_prefix(subcmd, "enable");
-    if (p) {
-        p = skip_spaces(p);
-        unsigned long val = strtoul(p, NULL, 0);
-        uint8_t v = val ? 1 : 0;
-        RegMap_Lock();
-        RegMap_Write(reg_ctrl, &v, 1);
-        RegMap_Unlock();
-        return (uint16_t)snprintf((char *)resp, max,
-            "%s %s\r\n", name, v ? "enabled" : "disabled");
-    }
-
-    return (uint16_t)snprintf((char *)resp, max,
-        "Error: expected 'freq <hz>', 'duty <0-10000>', or 'enable <0|1>'\r\n");
+    return scpi_error(resp, max);
 }
 
 /* ------------------------------------------------------------------ */
-/*  Help text                                                          */
+/*  SYSTem subsystem                                                   */
 /* ------------------------------------------------------------------ */
 
 static const char HELP_TEXT[] =
-    "Commands:\r\n"
-    "  freq                    - Read frequency (Hz)\r\n"
-    "  duty                    - Read duty cycle (%%)\r\n"
-    "  period                  - Read period (ticks)\r\n"
-    "  pulse                   - Read pulse width (ticks)\r\n"
-    "  status                  - Read all measurements\r\n"
-    "  edge                    - Read capture edge\r\n"
-    "  capture                 - Read capture state (on/off)\r\n"
-    "  set edge <0|1>          - Set capture edge (0=rising, 1=falling)\r\n"
-    "  set capture <on|off>    - Enable/disable input capture\r\n"
-    "  set tim_psc <0-65535>   - Set timer prescaler\r\n"
-    "  set ic_psc <0-3>        - Set input capture prescaler\r\n"
-    "  set pwm1 freq <hz>      - Stage PWM1 frequency\r\n"
-    "  set pwm1 duty <0-10000> - Stage PWM1 duty (0.01%% units)\r\n"
-    "  set pwm1 enable <0|1>   - Apply staged PWM1 config\r\n"
-    "  set pwm2 freq <hz>      - Stage PWM2 frequency\r\n"
-    "  set pwm2 duty <0-10000> - Stage PWM2 duty (0.01%% units)\r\n"
-    "  set pwm2 enable <0|1>   - Apply staged PWM2 config\r\n"
-    "  set led period <ms>     - Set status LED blink period\r\n"
-    "  set led duty <0-100>    - Set status LED on-duty (%%)\r\n"
-    "  set led_g period <ms>   - Set green LED blink period\r\n"
-    "  set led_g duty <0-100>  - Set green LED on-duty (%%)\r\n"
-    "  set led_r period <ms>   - Set red LED blink period\r\n"
-    "  set led_r duty <0-100>  - Set red LED on-duty (%%)\r\n"
-    "  set trig_width <1-1000> - Set trigger pulse width (us)\r\n"
-    "  save                    - Save config to flash\r\n"
-    "  help                    - Show this help\r\n";
+    "SCPI Command Reference:\r\n"
+    "  *IDN?                        - Device identification\r\n"
+    "  *SAV                         - Save config to flash\r\n"
+    "  *RST                         - Reset MCU\r\n"
+    "  MEASure:FREQuency?           - Read frequency (Hz)\r\n"
+    "  MEASure:DUTY?                - Read duty cycle (0.01%% units)\r\n"
+    "  MEASure:PERiod?              - Read period (ticks)\r\n"
+    "  MEASure:PULSe?               - Read pulse width (ticks)\r\n"
+    "  MEASure:ALL?                 - Read all measurements\r\n"
+    "  CAPture:EDGE[?] [0|1]       - Capture edge (0=rise,1=fall)\r\n"
+    "  CAPture:ENABle[?] [ON|OFF]  - Enable/disable capture\r\n"
+    "  CAPture:TIM:PSC[?] [0-65535]- Timer prescaler\r\n"
+    "  CAPture:IC:PSC[?] [0-3]     - IC prescaler\r\n"
+    "  SOURce:PWM1:FREQuency[?] [Hz]  - PWM1 frequency\r\n"
+    "  SOURce:PWM1:DUTY[?] [0-10000]  - PWM1 duty (0.01%%)\r\n"
+    "  SOURce:PWM1:ENABle[?] [0|1]    - PWM1 enable/apply\r\n"
+    "  SOURce:PWM2:FREQuency[?] [Hz]  - PWM2 frequency\r\n"
+    "  SOURce:PWM2:DUTY[?] [0-10000]  - PWM2 duty (0.01%%)\r\n"
+    "  SOURce:PWM2:ENABle[?] [0|1]    - PWM2 enable/apply\r\n"
+    "  LED:PERiod[?] [ms]          - Status LED period\r\n"
+    "  LED:DUTY[?] [0-100]         - Status LED duty\r\n"
+    "  LED:G:PERiod[?] [ms]        - Green LED period\r\n"
+    "  LED:G:DUTY[?] [0-100]       - Green LED duty\r\n"
+    "  LED:R:PERiod[?] [ms]        - Red LED period\r\n"
+    "  LED:R:DUTY[?] [0-100]       - Red LED duty\r\n"
+    "  TRIGger:WIDTh[?] [1-1000]   - Trigger pulse width (us)\r\n"
+    "  SYSTem:VERSion?              - Firmware version\r\n"
+    "  SYSTem:HELP?                 - Show this help\r\n"
+    "\r\n"
+    "Uppercase = mandatory abbreviation. Case-insensitive.\r\n";
 
-/* ------------------------------------------------------------------ */
-/*  Main line dispatcher                                               */
-/* ------------------------------------------------------------------ */
-
-/**
- * Parse a completed, NUL-terminated command line and write the
- * response into resp[].  Returns number of bytes written.
- */
-static uint16_t parse_line(const char *line, uint8_t *resp, uint16_t max)
+static uint16_t dispatch_system(const char *p, uint8_t *resp, uint16_t max)
 {
-    const char *p;
+    const char *r;
 
-    /* Skip leading whitespace */
-    line = skip_spaces(line);
+    r = scpi_match_kw(p, "version", 4);  /* VERS */
+    if (r && is_query(r))
+        return (uint16_t)snprintf((char *)resp, max, "%08lX\r\n",
+                                  (unsigned long)CFG_FW_VERSION);
 
-    /* Empty line — ignore */
-    if (*line == '\0')
-        return 0;
-
-    /* ---- Read commands ---- */
-
-    if (match_prefix(line, "status") &&
-        (line[6] == '\0' || line[6] == ' '))
-        return cmd_status(resp, max);
-
-    if (match_prefix(line, "freq") &&
-        (line[4] == '\0' || line[4] == ' '))
-        return cmd_freq(resp, max);
-
-    if (match_prefix(line, "duty") &&
-        (line[4] == '\0' || line[4] == ' '))
-        return cmd_duty(resp, max);
-
-    if (match_prefix(line, "period") &&
-        (line[6] == '\0' || line[6] == ' '))
-        return cmd_period(resp, max);
-
-    if (match_prefix(line, "pulse") &&
-        (line[5] == '\0' || line[5] == ' '))
-        return cmd_pulse(resp, max);
-
-    if (match_prefix(line, "edge") &&
-        (line[4] == '\0' || line[4] == ' '))
-        return cmd_edge(resp, max);
-
-    if (match_prefix(line, "capture") &&
-        (line[7] == '\0' || line[7] == ' '))
-        return cmd_capture(resp, max);
-
-    /* ---- save ---- */
-
-    if (match_prefix(line, "save") &&
-        (line[4] == '\0' || line[4] == ' ')) {
-        uint8_t key = SAVE_CFG_KEY;
-        RegMap_Lock();
-        RegMap_Write(REG_SAVE_CFG, &key, 1);
-        RegMap_Unlock();
-        return (uint16_t)snprintf((char *)resp, max, "Config saved\r\n");
-    }
-
-    /* ---- help ---- */
-
-    if (match_prefix(line, "help") &&
-        (line[4] == '\0' || line[4] == ' ')) {
+    r = scpi_match_kw(p, "help", 4);     /* HELP */
+    if (r && is_query(r)) {
         uint16_t len = (uint16_t)strlen(HELP_TEXT);
         if (len >= max) len = max - 1;
         memcpy(resp, HELP_TEXT, len);
         return len;
     }
 
-    /* ---- set commands ---- */
+    return scpi_error(resp, max);
+}
 
-    p = match_prefix(line, "set ");
-    if (p) {
-        p = skip_spaces(p);
-        const char *sub;
+/* ------------------------------------------------------------------ */
+/*  Main line dispatcher                                               */
+/* ------------------------------------------------------------------ */
 
-        /* set edge */
-        sub = match_prefix(p, "edge ");
-        if (sub)
-            return cmd_set_edge(skip_spaces(sub), resp, max);
+static uint16_t parse_line(const char *line, uint8_t *resp, uint16_t max)
+{
+    const char *p, *r, *c;
 
-        /* set tim_psc */
-        sub = match_prefix(p, "tim_psc ");
-        if (sub)
-            return cmd_set_tim_psc(skip_spaces(sub), resp, max);
+    p = skip_spaces(line);
+    if (*p == '\0') return 0;
 
-        /* set ic_psc */
-        sub = match_prefix(p, "ic_psc ");
-        if (sub)
-            return cmd_set_ic_psc(skip_spaces(sub), resp, max);
+    /* ---- IEEE 488.2 common commands (prefix *) ---- */
+    if (*p == '*') {
+        p++;
+        r = scpi_match_kw(p, "idn", 3);
+        if (r && is_query(r)) return cmd_idn(resp, max);
 
-        /* set capture */
-        sub = match_prefix(p, "capture ");
-        if (sub)
-            return cmd_set_capture(skip_spaces(sub), resp, max);
+        r = scpi_match_kw(p, "sav", 3);
+        if (r && (*r == '\0' || *r == ' ')) return cmd_sav(resp, max);
 
-        /* set trig_width */
-        sub = match_prefix(p, "trig_width ");
-        if (sub)
-            return cmd_set_trig_width(skip_spaces(sub), resp, max);
+        r = scpi_match_kw(p, "rst", 3);
+        if (r && (*r == '\0' || *r == ' ')) return cmd_rst(resp, max);
 
-        /* set pwm1 ... */
-        sub = match_prefix(p, "pwm1 ");
-        if (sub)
-            return cmd_set_pwm_generic(skip_spaces(sub), "PWM1",
-                        REG_PWM1_FREQ_L, REG_PWM1_FREQ_H,
-                        REG_PWM1_DUTY, REG_PWM1_CTRL,
-                        resp, max);
-
-        /* set pwm2 ... */
-        sub = match_prefix(p, "pwm2 ");
-        if (sub)
-            return cmd_set_pwm_generic(skip_spaces(sub), "PWM2",
-                        REG_PWM2_FREQ_L, REG_PWM2_FREQ_H,
-                        REG_PWM2_DUTY, REG_PWM2_CTRL,
-                        resp, max);
-
-        /* set led_g ... (must check before "led" to avoid prefix clash) */
-        sub = match_prefix(p, "led_g ");
-        if (sub)
-            return cmd_set_led_generic(skip_spaces(sub), "LED_G",
-                        REG_LED_G_PERIOD, REG_LED_G_DUTY,
-                        resp, max);
-
-        /* set led_r ... */
-        sub = match_prefix(p, "led_r ");
-        if (sub)
-            return cmd_set_led_generic(skip_spaces(sub), "LED_R",
-                        REG_LED_R_PERIOD, REG_LED_R_DUTY,
-                        resp, max);
-
-        /* set led ... (checked after led_g / led_r) */
-        sub = match_prefix(p, "led ");
-        if (sub)
-            return cmd_set_led_generic(skip_spaces(sub), "LED",
-                        REG_LED_PERIOD, REG_LED_DUTY,
-                        resp, max);
-
-        return (uint16_t)snprintf((char *)resp, max,
-            "Unknown set target. Type 'help'\r\n");
+        return scpi_error(resp, max);
     }
 
-    /* ---- Unknown ---- */
-    return (uint16_t)snprintf((char *)resp, max,
-        "Unknown command. Type 'help'\r\n");
+    /* ---- SCPI subsystem dispatch ---- */
+
+    /* MEASure: */
+    r = scpi_match_kw(p, "measure", 4);  /* MEAS */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_meas(c, resp, max);
+        return scpi_error(resp, max);
+    }
+
+    /* CAPture: */
+    r = scpi_match_kw(p, "capture", 4);  /* CAPT */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_capt(c, resp, max);
+        return scpi_error(resp, max);
+    }
+
+    /* SOURce: */
+    r = scpi_match_kw(p, "source", 4);   /* SOUR */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_source(c, resp, max);
+        return scpi_error(resp, max);
+    }
+
+    /* LED: */
+    r = scpi_match_kw(p, "led", 3);      /* LED */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_led(c, resp, max);
+        return scpi_error(resp, max);
+    }
+
+    /* TRIGger: */
+    r = scpi_match_kw(p, "trigger", 4);  /* TRIG */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_trig(c, resp, max);
+        return scpi_error(resp, max);
+    }
+
+    /* SYSTem: */
+    r = scpi_match_kw(p, "system", 4);   /* SYST */
+    if (r) {
+        c = skip_colon(r);
+        if (c) return dispatch_system(c, resp, max);
+        return scpi_error(resp, max);
+    }
+
+    return scpi_error(resp, max);
 }
 
 /* ------------------------------------------------------------------ */
@@ -588,26 +800,21 @@ uint16_t CDC_ProcessRxData(const uint8_t *data, uint16_t len,
         char c = (char)data[i];
 
         if (c == '\r' || c == '\n') {
-            /* Ignore empty lines caused by \r\n pairs */
             if (s_line_pos == 0)
                 continue;
 
-            /* NUL-terminate the accumulated line */
             s_line[s_line_pos] = '\0';
             s_line_pos = 0;
 
-            /* Echo a blank line before the response for readability */
             if (total + 2 <= response_max) {
                 response_buf[total++] = '\r';
                 response_buf[total++] = '\n';
             }
 
-            /* Parse and append response */
             uint16_t remaining = response_max - total;
             uint16_t n = parse_line(s_line, response_buf + total, remaining);
             total += n;
         } else {
-            /* Accumulate printable characters, silently drop overflow */
             if (s_line_pos < LINE_BUF_SIZE - 1) {
                 s_line[s_line_pos++] = c;
             }
@@ -618,12 +825,12 @@ uint16_t CDC_ProcessRxData(const uint8_t *data, uint16_t len,
 }
 
 /* ------------------------------------------------------------------ */
-/*  New FIFO-based API                                                 */
+/*  FIFO-based API                                                     */
 /* ------------------------------------------------------------------ */
 
 void CDC_ParseLine(const char *line)
 {
-    static uint8_t resp[256];
+    static uint8_t resp[2048];
     uint16_t n = parse_line(line, resp, sizeof(resp));
     if (n > 0)
     {

@@ -1,6 +1,6 @@
 # STM32F411 Frequency Counter
 
-A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. Also provides two independent PWM outputs with auto-prescaler for maximum resolution. A host MCU reads measurements, configures settings, and controls PWM outputs over I2C. All configuration is persistable to flash. Runs on FreeRTOS.
+A frequency counter with I2C slave + USB CDC + USB HID interfaces built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. Also provides two independent PWM outputs with auto-prescaler for maximum resolution. A host MCU reads measurements, configures settings, and controls PWM outputs over I2C, USB CDC text console (SCPI), or USB HID binary register access. All configuration is persistable to flash. Runs on FreeRTOS.
 
 ## Hardware
 
@@ -16,9 +16,10 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 | PC14 | Green LED (active-high, configurable blink) |
 | PB10 | Red LED (active-high, configurable blink) |
 
-- MCU: STM32F411CEUx, 100 MHz (HSI + PLL)
-- TIM2 timer clock: 100 MHz (default prescaler = 0)
+- MCU: STM32F411CEUx, 96 MHz (HSE 25 MHz + PLL)
+- TIM2 timer clock: 96 MHz (default prescaler = 0)
 - I2C1: 400 kHz fast mode, 7-bit addressing
+- USB: Composite device (CDC + HID), VID `0x0483`, PID `0x5741`, product "FC-411 USB Composite"
 
 > **Note:** External pull-up resistors (e.g., 4.7k) are required on SDA/PB7 and SCL/PB8 since the GPIOs are configured as open-drain with no internal pull-ups.
 
@@ -34,7 +35,7 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 | 0x04 | FREQ | 4 bytes | Read | Calculated frequency in Hz |
 | 0x08 | DUTY | 4 bytes | Read | Duty cycle in 0.01% units (5000 = 50.00%) |
 | 0x0C | PULSE | 4 bytes | Read | Pulse width (high-time) in timer ticks |
-| 0x10 | EDGE | 1 byte | Read/Write | Capture edge: 0 = rising (default), 1 = falling |
+| 0x10 | EDGE | 1 byte | Read/Write | Capture edge: 0 = rising/high-time duty (default), 1 = falling/low-time duty |
 | 0x11 | TIM_PSC | 2 bytes | Read/Write | Timer prescaler, 0-65535 (default: 0) |
 | 0x13 | IC_PSC | 1 byte | Read/Write | Input capture prescaler: 0=DIV1, 1=DIV2, 2=DIV4, 3=DIV8 |
 | 0x14 | CAPTURE_CTRL | 1 byte | Read/Write | Capture enable: 0 = off, 1 = on (default: 1) |
@@ -64,7 +65,7 @@ A frequency counter with I2C slave interface built on the STM32F411CEUx (WeAct B
 
 All multi-byte values are **little-endian** (native ARM byte order).
 
-Timer clock = 100,000,000 / (TIM_PSC + 1). With default TIM_PSC=0, each tick = 10 ns.
+Timer clock = 96,000,000 / (TIM_PSC + 1). With default TIM_PSC=0, each tick ≈ 10.4 ns.
 
 ### Persistent Configuration
 
@@ -96,7 +97,7 @@ Two independent PWM outputs (PA8 and PB6) are controlled via a staging protocol:
 2. Write `DUTY` to set the duty cycle (0–10000 in 0.01% units)
 3. Write `CTRL` with bit0=1 to **apply** the staged values atomically and enable output
 
-Only writing `CTRL` changes the hardware output. The firmware auto-computes the optimal prescaler (PSC) and auto-reload value (ARR) to maximize duty cycle resolution. Both timers run at 100 MHz. A trigger pulse is output on PA7 each time `CTRL` is written.
+Only writing `CTRL` changes the hardware output. The firmware auto-computes the optimal prescaler (PSC) and auto-reload value (ARR) to maximize duty cycle resolution. Both timers run at 96 MHz (APB1) / 96 MHz (APB2). A trigger pulse is output on PA7 each time `CTRL` is written.
 
 **Example: set PWM1 to 1 kHz, 50% duty:**
 ```
@@ -196,16 +197,35 @@ double dutyPercent = dutyCenti / 100.0;
 Console.WriteLine($"Frequency: {freq} Hz, Duty: {dutyPercent:F2} %");
 ```
 
+## USB Interfaces
+
+The device enumerates as a USB composite device with two interfaces:
+
+**CDC** (virtual COM port): Text-based SCPI command console. See [docs/CDC_programming_guide.md](docs/CDC_programming_guide.md) for the full command reference.
+
+**HID** (vendor-defined): 64-byte binary reports for direct register read/write access. Uses the same register map as I2C.
+
+### PWM Dashboard (Test GUI)
+
+A Python/Tkinter GUI tool is included for interactive testing:
+
+```bash
+pip install pyserial
+python tools/pwm_dashboard.py
+```
+
+Features: PWM output control, real-time measurement display, capture edge selection, device nickname editing, multi-device support, and a CDC console for raw SCPI commands. See [docs/PWM_Dashboard_User_Guide.md](docs/PWM_Dashboard_User_Guide.md) for details.
+
 ## Measurement Specifications
 
 | Parameter | Value |
 |-----------|-------|
-| Frequency range | ~2.3 Hz to ~50 MHz (with default PSC=0) |
-| Period resolution | 10 ns per tick (at 100 MHz timer clock) |
+| Frequency range | ~2.3 Hz to ~48 MHz (with default PSC=0) |
+| Period resolution | ~10.4 ns per tick (at 96 MHz timer clock) |
 | Duty resolution | 0.01% |
 | No-signal timeout | 1 second (all registers read 0) |
 | Minimum measurable period | 2 timer ticks (50 MHz max input) |
-| Maximum measurable period | 2^32 ticks = ~42.9 seconds (at 100 MHz) |
+| Maximum measurable period | 2^32 ticks = ~44.7 seconds (at 96 MHz) |
 
 ## PWM Output Specifications
 
@@ -225,10 +245,11 @@ The IC prescaler captures every Nth edge (DIV1/2/4/8), useful for reducing inter
 
 ## Software Architecture
 
-The firmware runs on **FreeRTOS** (v10.3.1, native API) with two application tasks:
+The firmware runs on **FreeRTOS** (v10.3.1, native API) with three application tasks:
 
 | Task | Purpose |
 |------|---------|
+| UsbTask | Processes CDC commands and HID reports from event queue |
 | LedTask | Manages blinking of all 3 LEDs with configurable period and duty cycle |
 | MonitorTask | Detects signal loss (1s timeout) and zeros measurement registers |
 

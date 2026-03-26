@@ -39,7 +39,7 @@ The `.ioc` file (`Frequency_Counter.ioc`) drives code generation. All peripheral
 | Peripheral | Purpose | Pins |
 |-----------|---------|------|
 | TIM2 CH1 | Input capture (frequency input) | PA15 (AF1) — remapped from CubeMX's PA0 in USER CODE |
-| TIM2 CH2 | Indirect capture (pulse width) | Same TI1 input, opposite edge |
+| TIM2 CH2 | Indirect capture (pulse width) | Same TI1 input via INDIRECTTI (see polarity note below) |
 | I2C1 | Slave interface (addr 0x08) | PB7 (SDA), PB8 (SCL) — addr overridden from CubeMX's 0x7E in USER CODE |
 | GPIO PC13 | Status LED (active-low) | PC13 — initialized manually in USER CODE, not in CubeMX |
 | GPIO PC14 | Green LED (active-high) | PC14 — initialized manually in USER CODE |
@@ -133,6 +133,7 @@ All multi-byte values are little-endian. Config persists across power cycles via
 - **HAL module enables**: `Core/Inc/stm32f4xx_hal_conf.h`
 - **USB composite class** (CDC + HID): `Middlewares/ST/STM32_USB_Device_Library/Class/Composite/`
 - **USB application layer** (conf, desc, CDC cmd parser, HID handler): `USB_DEVICE/App/`
+- **PWM Dashboard GUI** (Python/Tkinter test tool): `tools/pwm_dashboard.py`
 - **CubeMX config**: `Frequency_Counter.ioc`
 
 ### FreeRTOS Integration
@@ -175,6 +176,7 @@ After CubeMX regeneration, these changes outside USER CODE blocks must be re-app
 - All custom code lives in `/* USER CODE BEGIN/END */` sections — never edit generated code outside these markers
 - CubeMX overrides (GPIO remap, I2C address) are done in USER CODE sections after the generated init, not by modifying the `.ioc`
 - HAL callback pattern: thin IRQ handlers in `stm32f4xx_it.c` delegate to `HAL_*_IRQHandler()`, which dispatches to `HAL_*_Callback()` overrides in `main.c`
+- **INDIRECTTI polarity quirk**: With `TIM_ICSELECTION_INDIRECTTI`, the polarity bit has the opposite effect from DIRECTTI. To measure high-time duty on "rising edge" setting, CH1 must be configured for **falling** polarity and CH2 for **rising** polarity. The condition in `FreqCounter_Reconfigure()` is intentionally swapped: `EDGE_RISING` maps to `FALLING` capture polarity. Do not "fix" this — it was verified empirically.
 - `FreqCounter_Reconfigure()` in `main.c` is the single function to call when any timer parameter changes (edge, prescalers) — it stops, reconfigures, and restarts both channels
 - `Config_Save()` erases flash sector 7 and writes a `ConfigData_t` struct with magic number — called via I2C write 0x5A to reg 0x30
 - `Config_Load()` runs at boot before peripherals start — validates magic, applies saved settings or keeps defaults

@@ -52,6 +52,9 @@ RE_MEAS_ALL = re.compile(
     r"(ON|OFF),(\d+),(\d+)\.(\d+),(\d+),(\d+)"
 )
 
+# SYST:NAME? response: "nickname"\r\n
+RE_NICKNAME = re.compile(r'"([^"]{0,16})"')
+
 
 class ResponseParser:
     """Parse SCPI responses from the frequency counter firmware."""
@@ -77,6 +80,16 @@ class ResponseParser:
             "pulse_ticks": int(last_match.group(6)),
         }
         return result, last_match.end()
+
+    @staticmethod
+    def parse_nickname(text):
+        """Return (nickname_str, end_index) from SYST:NAME? response, or (None, -1)."""
+        last = None
+        for m in RE_NICKNAME.finditer(text):
+            last = m
+        if not last:
+            return None, -1
+        return last.group(1), last.end()
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +163,29 @@ class SerialManager:
 
     @staticmethod
     def list_ports():
-        """Return list of (port_name, description, is_target) tuples."""
+        """Return list of port-info dicts with pyserial metadata."""
         result = []
         for p in serial.tools.list_ports.comports():
             is_target = p.vid == TARGET_VID and p.pid == TARGET_PID
-            desc = f"{p.device} - {p.description}"
-            result.append((p.device, desc, is_target))
+            info = {
+                "device": p.device,
+                "description": p.description,
+                "is_target": is_target,
+                "vid": p.vid,
+                "pid": p.pid,
+                "serial_number": p.serial_number,
+                "manufacturer": p.manufacturer,
+                "product": p.product,
+                "hwid": p.hwid,
+            }
+            if is_target:
+                sn_short = (p.serial_number or "?")[:8]
+                info["display"] = f"{p.device} - FC-411 [{sn_short}]"
+            else:
+                info["display"] = f"{p.device} - {p.description}"
+            result.append(info)
+        # target devices first, then alphabetically by device name
+        result.sort(key=lambda x: (not x["is_target"], x["device"]))
         return result
 
     # -- internal --
@@ -409,6 +439,8 @@ class PwmDashboardApp(tk.Tk):
         self._refresh_interval = tk.StringVar(value="500")
         self._refresh_after_id = None
         self._capture_on = True  # mirrors device state
+        self._connected_device_info = None
+        self._pending_nickname_query = False
 
         self._build_fonts()
         self._build_ui()
@@ -467,17 +499,61 @@ class PwmDashboardApp(tk.Tk):
         )
         self._status_label.grid(row=0, column=4, padx=8, pady=4)
 
+        # --- Device info row (hidden until connected to FC-411) ---
+        self._device_info_frame = ttk.Frame(frame)
+        # row=1, span all columns
+        self._device_info_frame.grid(row=1, column=0, columnspan=5, sticky="ew", padx=4, pady=(0, 4))
+        self._device_info_frame.grid_remove()  # hidden by default
+
+        self._vid_pid_label = ttk.Label(
+            self._device_info_frame, text="VID: ----  PID: ----",
+            font=("Consolas", 9),
+        )
+        self._vid_pid_label.pack(side="left", padx=(0, 6))
+
+        ttk.Separator(self._device_info_frame, orient="vertical").pack(
+            side="left", fill="y", padx=6, pady=2
+        )
+
+        self._serial_label = ttk.Label(
+            self._device_info_frame, text="SN: ----------------",
+            font=("Consolas", 9),
+        )
+        self._serial_label.pack(side="left", padx=(0, 6))
+
+        ttk.Separator(self._device_info_frame, orient="vertical").pack(
+            side="left", fill="y", padx=6, pady=2
+        )
+
+        ttk.Label(self._device_info_frame, text="Nickname:").pack(side="left", padx=(0, 2))
+        self._nickname_var = tk.StringVar()
+        self._nickname_entry = ttk.Entry(
+            self._device_info_frame, textvariable=self._nickname_var, width=18,
+        )
+        self._nickname_entry.pack(side="left", padx=2)
+        self._nickname_entry.bind("<Return>", lambda e: self._apply_nickname())
+
+        self._nickname_apply_btn = ttk.Button(
+            self._device_info_frame, text="Apply", width=6, command=self._apply_nickname,
+        )
+        self._nickname_apply_btn.pack(side="left", padx=2)
+
+        self._nickname_reset_btn = ttk.Button(
+            self._device_info_frame, text="Reset", width=6, command=self._reset_nickname,
+        )
+        self._nickname_reset_btn.pack(side="left", padx=2)
+
         self._refresh_ports()
 
     def _refresh_ports(self):
         ports = SerialManager.list_ports()
-        display = [desc for _, desc, _ in ports]
+        display = [info["display"] for info in ports]
         self._port_combo["values"] = display
-        self._port_map = {desc: name for name, desc, _ in ports}
-        # auto-select target device
-        for name, desc, is_target in ports:
-            if is_target:
-                self._port_var.set(desc)
+        self._port_map = {info["display"]: info for info in ports}
+        # auto-select first target device
+        for info in ports:
+            if info["is_target"]:
+                self._port_var.set(info["display"])
                 return
         if display and not self._port_var.get():
             self._port_var.set(display[0])
@@ -488,10 +564,16 @@ class PwmDashboardApp(tk.Tk):
             self._update_connection_status(False)
         else:
             desc = self._port_var.get()
-            port = self._port_map.get(desc, desc)
+            info = self._port_map.get(desc)
+            port = info["device"] if info else desc
             try:
                 self._serial.connect(port)
+                self._connected_device_info = info
                 self._update_connection_status(True)
+                # show device info and query nickname for FC-411 devices
+                if info and info["is_target"]:
+                    self._show_device_info(info)
+                    self._query_nickname()
             except Exception as e:
                 self._console_append(f"[ERROR] {e}\n")
                 self._update_connection_status(False)
@@ -511,6 +593,45 @@ class PwmDashboardApp(tk.Tk):
             self._connect_btn.configure(text="Connect")
             self._set_controls_enabled(False)
             self._cancel_refresh()
+            self._hide_device_info()
+
+    # --- Device Info helpers ---
+
+    def _show_device_info(self, info):
+        vid = info.get("vid") or 0
+        pid = info.get("pid") or 0
+        sn = info.get("serial_number") or "?"
+        self._vid_pid_label.configure(text=f"VID: {vid:04X}  PID: {pid:04X}")
+        self._serial_label.configure(text=f"SN: {sn}")
+        self._nickname_var.set("")
+        self._device_info_frame.grid()
+
+    def _hide_device_info(self):
+        self._device_info_frame.grid_remove()
+        self._connected_device_info = None
+        self._pending_nickname_query = False
+        self._nickname_var.set("")
+
+    def _query_nickname(self):
+        self._pending_nickname_query = True
+        self._send_cmd("SYST:NAME?\n")
+
+    def _apply_nickname(self):
+        nick = self._nickname_var.get().strip()[:16]
+        if nick:
+            self._pending_nickname_query = True
+            self._send_cmd(f'SYST:NAME "{nick}"\n')
+
+    def _reset_nickname(self):
+        self._pending_nickname_query = True
+        self._send_cmd("SYST:NAME:DEF\n")
+
+    def _try_parse_nickname(self):
+        nick, end = ResponseParser.parse_nickname(self._rx_buffer)
+        if nick is not None:
+            self._nickname_var.set(nick)
+            self._pending_nickname_query = False
+            self._rx_buffer = self._rx_buffer[end:]
 
     # --- PWM Panels ---
 
@@ -579,6 +700,18 @@ class PwmDashboardApp(tk.Tk):
             command=self._toggle_capture,
         )
         self._capture_btn.pack(side="left", padx=4)
+
+        ttk.Label(ctrl_frame, text="Edge:").pack(side="left", padx=(8, 2))
+        self._edge_var = tk.StringVar(value="Rising")
+        self._edge_combo = ttk.Combobox(
+            ctrl_frame,
+            textvariable=self._edge_var,
+            values=["Rising", "Falling"],
+            width=8,
+            state="readonly",
+        )
+        self._edge_combo.pack(side="left", padx=2)
+        self._edge_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_edge())
 
         ttk.Separator(ctrl_frame, orient="vertical").pack(
             side="left", fill="y", padx=6, pady=2
@@ -709,6 +842,8 @@ class PwmDashboardApp(tk.Tk):
             if text:
                 self._console_append(text)
                 self._rx_buffer += text
+                if self._pending_nickname_query:
+                    self._try_parse_nickname()
                 self._try_parse_measurements()
                 # trim buffer
                 if len(self._rx_buffer) > 4096:
@@ -754,13 +889,13 @@ class PwmDashboardApp(tk.Tk):
 
     def _schedule_refresh(self):
         self._cancel_refresh()
-        if self._auto_refresh.get() and self._serial.is_connected():
+        if self._auto_refresh.get() and self._serial.is_connected() and self._capture_on:
             self._do_refresh()
 
     def _do_refresh(self):
-        if self._serial.is_connected():
+        if self._serial.is_connected() and self._capture_on:
             self._send_cmd("MEAS:ALL?\n")
-        if self._auto_refresh.get() and self._serial.is_connected():
+        if self._auto_refresh.get() and self._serial.is_connected() and self._capture_on:
             ms = self._get_refresh_ms()
             self._refresh_after_id = self.after(ms, self._do_refresh)
 
@@ -774,10 +909,19 @@ class PwmDashboardApp(tk.Tk):
         self._send_cmd(cmd)
         self._capture_on = new_state
         self._update_capture_ui()
+        # stop polling when capture off, resume when on
+        if new_state:
+            self._schedule_refresh()
+        else:
+            self._cancel_refresh()
 
     def _update_capture_ui(self):
         text = "Capture: ON" if self._capture_on else "Capture: OFF"
         self._capture_btn.configure(text=text)
+
+    def _apply_edge(self):
+        val = 0 if self._edge_var.get() == "Rising" else 1
+        self._send_cmd(f"CAPT:EDGE {val}\n")
 
     # -- enable/disable controls --
 

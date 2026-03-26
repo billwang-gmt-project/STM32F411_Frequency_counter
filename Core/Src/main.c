@@ -815,8 +815,10 @@ void FreqCounter_Reconfigure(void)
   sSlaveConfig.InputTrigger = TIM_TS_TI1FP1;
   sSlaveConfig.TriggerFilter = 0;
 
-  if (g_edge_config == EDGE_FALLING)
+  if (g_edge_config == EDGE_RISING)
   {
+    /* INDIRECTTI quirk: to measure high-time on "rising edge" setting,
+       CH1 must capture on falling, CH2 (indirect) on rising. */
     sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
     sConfigIC2.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
     sSlaveConfig.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;

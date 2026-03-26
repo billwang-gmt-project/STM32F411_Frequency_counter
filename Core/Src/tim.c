@@ -75,9 +75,11 @@ void MX_TIM2_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM2_Init 2 */
-  /* Configure CH2 as indirect input (mapped to TI1, falling edge) for pulse width */
+  /* Configure CH2 as indirect input (mapped to TI1) for pulse width.
+     INDIRECTTI quirk: rising polarity here captures the falling edge of TI1,
+     which gives high-time measurement when CH1 captures on falling edge. */
   TIM_IC_InitTypeDef sConfigIC2 = {0};
-  sConfigIC2.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
+  sConfigIC2.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
   sConfigIC2.ICSelection = TIM_ICSELECTION_INDIRECTTI;
   sConfigIC2.ICPrescaler = TIM_ICPSC_DIV1;
   sConfigIC2.ICFilter = 0;
@@ -86,11 +88,12 @@ void MX_TIM2_Init(void)
     Error_Handler();
   }
 
-  /* Configure slave reset mode: counter resets on each rising edge of TI1 */
+  /* Configure slave reset mode: counter resets on each falling edge of TI1
+     (default EDGE_RISING maps to falling-capture for correct high-time duty) */
   TIM_SlaveConfigTypeDef sSlaveConfig2 = {0};
   sSlaveConfig2.SlaveMode = TIM_SLAVEMODE_RESET;
   sSlaveConfig2.InputTrigger = TIM_TS_TI1FP1;
-  sSlaveConfig2.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sSlaveConfig2.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
   sSlaveConfig2.TriggerFilter = 0;
   if (HAL_TIM_SlaveConfigSynchro(&htim2, &sSlaveConfig2) != HAL_OK)
   {

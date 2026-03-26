@@ -43,7 +43,8 @@ The board has two PWM outputs and one capture input:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Connection           [Port ▾]  [Refresh] [Connect]  Status │
+│  Connection           [Port ▾]  [Refresh] [Disconnect] Status│
+│  VID: 0483  PID: 5741 │ SN: A1B2C3D4E5F6G7H8 │ Nickname: [__] [Apply][Reset] │
 ├─────────────────────────────┬────────────────────────────────┤
 │  PWM1 (PA8)                 │  PWM2 (PB6)                    │
 │  Freq (Hz): [1000] Step:[▾] │  Freq (Hz): [1000] Step:[▾]   │
@@ -55,16 +56,13 @@ The board has two PWM outputs and one capture input:
 │  Captured Measurements                                       │
 │    Freq: 1000 Hz              Duty: 50.00%                   │
 │    Period: 96000 ticks        Pulse: 48000 ticks             │
-│  [Capture: ON] │ [✓ Auto-refresh]  Interval: [500 ms ▾]  [Refresh Now] │
+│  [Capture: ON] Edge:[Rising▾] │ [✓ Auto-refresh] [500 ms▾] [Refresh Now] │
 ├──────────────────────────────────────────────────────────────┤
 │  CDC Console                                                 │
 │  TX: [________________________] [Send]                       │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │ > set pwm1 freq 1000                                  │   │
-│  │ PWM1 freq staged: 1000 Hz                             │   │
-│  │ > status                                              │   │
-│  │ Frequency: 1000 Hz                                    │   │
-│  │ Duty: 50.00%                                          │   │
+│  │ > MEAS:ALL?                                           │   │
+│  │ ON,1000,50.00,96000,48000                             │   │
 │  └──────────────────────────────────────────────────────┘   │
 │  [Clear]                                                     │
 └──────────────────────────────────────────────────────────────┘
@@ -76,11 +74,28 @@ The board has two PWM outputs and one capture input:
 
 1. Plug the STM32F411 board into your PC via USB.
 2. Launch the dashboard: `python tools/pwm_dashboard.py`
-3. The **Connection** panel auto-detects the board (VID `0x0483`, PID `0x5741`). The correct COM port is pre-selected.
-4. If the port is not auto-detected, click **Refresh** to rescan, or select the port manually from the dropdown.
-5. Click **Connect**. The status indicator turns green and shows "Connected".
+3. The **Connection** panel auto-detects FC-411 devices by VID/PID (`0x0483:0x5741`). Target devices appear first in the dropdown, labelled `COMx - FC-411 [serial]` with truncated serial numbers for easy identification.
+4. If multiple FC-411 boards are connected, select the desired device from the dropdown.
+5. If the port is not auto-detected, click **Refresh** to rescan, or select the port manually.
+6. Click **Connect**. The status indicator turns green. For FC-411 devices, a **device info bar** appears showing VID, PID, serial number, and the current nickname.
 
-### 2. Basic PWM Loopback Test
+### 2. Device Info and Nickname
+
+When connected to an FC-411 device, the Connection panel expands with a second row:
+
+- **VID / PID**: USB vendor and product ID (read from the OS at enumeration time)
+- **SN**: Full 16-character serial number (derived from the STM32 UID)
+- **Nickname**: Editable field showing the device's current nickname (queried via `SYST:NAME?` on connect)
+
+**Changing the nickname:**
+1. Type a new name in the **Nickname** field (max 16 characters).
+2. Click **Apply** (or press Enter). The device echoes back the new nickname.
+3. Click **Reset** to revert the nickname to the default serial number.
+4. Use `*SAV` in the CDC console (or save via I2C/HID) to persist the nickname to flash.
+
+The device info bar is hidden when disconnected or when connected to a non-FC-411 serial device.
+
+### 3. Basic PWM Loopback Test
 
 1. Wire **PA8** to **PA15** with a jumper.
 2. In the **PWM1 (PA8)** panel:
@@ -92,7 +107,7 @@ The board has two PWM outputs and one capture input:
    - **Duty** should show approximately `50.00%`
 4. The CDC Console at the bottom shows all commands sent and responses received.
 
-### 3. Using the Frequency Slider
+### 4. Using the Frequency Slider
 
 1. Select a **Step** size from the dropdown next to the frequency field. Available steps: `1`, `10`, `100`, `1000`, `10000` Hz.
 2. The slider range adjusts automatically based on the step:
@@ -109,14 +124,14 @@ The board has two PWM outputs and one capture input:
 4. Commands are sent 300 ms after you stop moving the slider (debounced to avoid flooding).
 5. Alternatively, type a value directly in the field and press **Enter** to apply immediately. The entry field accepts any frequency, even values outside the slider range.
 
-### 4. Using the Duty Slider
+### 5. Using the Duty Slider
 
 1. Select a **Step** size: `0.1`, `1.0`, `5.0`, or `10.0` percent.
 2. Drag the slider (range 0 -- 100%). Values snap to the selected step.
 3. Or type a value like `25.50` in the field and press **Enter**.
 4. Duty is sent to the device in 0.01% units internally (e.g., `50.00%` = `5000`).
 
-### 5. Testing PWM2
+### 6. Testing PWM2
 
 1. In the **PWM2 (PB6)** panel, set a different frequency (e.g., `5000` Hz) and duty (e.g., `25.00%`).
 2. Click **Enable** in the PWM2 panel.
@@ -124,14 +139,22 @@ The board has two PWM outputs and one capture input:
 4. Observe the measurements update to match PWM2 settings.
 5. Both PWM channels are fully independent -- you can enable/disable them separately.
 
-### 6. Enabling / Disabling Capture
+### 7. Enabling / Disabling Capture
 
 The **Capture: ON / OFF** button in the measurements panel controls whether the board is actively measuring the input signal on PA15.
 
 - Click the button to toggle capture on or off. When off, all measurements read zero.
 - The button state syncs from the device on each status refresh — if another interface (I2C, HID, or CDC console) changes the capture state, the button updates automatically.
+- **Auto-refresh pauses** when capture is off (no `MEAS:ALL?` polling) and resumes when capture is turned back on.
 
-### 7. Adjusting Measurement Refresh
+**Capture edge**: The **Edge** dropdown next to the Capture button selects which edge triggers the measurement:
+
+- **Rising** (default): Measures high-time duty cycle. A 10% duty PWM reads as ~10%.
+- **Falling**: Measures low-time duty cycle. A 10% duty PWM reads as ~90%.
+
+Frequency and period readings are the same regardless of edge selection.
+
+### 8. Adjusting Measurement Refresh
 
 - **Auto-refresh** is enabled by default. The dashboard sends the `status` command periodically.
 - Change the **Interval** dropdown to adjust refresh rate: `100`, `200`, `500`, `1000`, or `2000` ms.
@@ -140,7 +163,7 @@ The **Capture: ON / OFF** button in the measurements panel controls whether the 
 - Uncheck **Auto-refresh** to stop automatic polling.
 - Click **Refresh Now** at any time for a one-shot measurement update.
 
-### 8. Using the CDC Console
+### 9. Using the CDC Console
 
 The console at the bottom shows all serial traffic and allows sending raw commands.
 
@@ -149,20 +172,22 @@ The console at the bottom shows all serial traffic and allows sending raw comman
 **Sending raw commands**: Type any command in the **TX** field and press **Enter** or click **Send**. Examples:
 
 ```
-help              -- show all available commands
-freq              -- read frequency only
-duty              -- read duty cycle only
-set capture off   -- disable input capture
-set capture on    -- enable input capture
-set edge 1        -- switch to falling edge capture
-set tim_psc 95    -- set timer prescaler to 95 (1 MHz tick rate)
-set ic_psc 2      -- set input capture prescaler to DIV4
-save              -- save current configuration to flash
+SYST:HELP?            -- show all available commands
+MEAS:FREQ?            -- read frequency only
+MEAS:DUTY?            -- read duty cycle only
+CAPT:ENAB OFF         -- disable input capture
+CAPT:ENAB ON          -- enable input capture
+CAPT:EDGE 1           -- switch to falling edge capture
+CAPT:TIM:PSC 95       -- set timer prescaler to 95 (1 MHz tick rate)
+CAPT:IC:PSC 2         -- set input capture prescaler to DIV4
+*SAV                  -- save current configuration to flash
+SYST:NAME?            -- query device nickname
+SYST:NAME "BENCH-1"   -- set device nickname
 ```
 
 **Clear**: Click **Clear** to empty the console output. The console keeps a maximum of 5000 lines.
 
-### 8. Disable PWM Output
+### 10. Disable PWM Output
 
 - Click the **Disable** button in the PWM panel to stop that channel's output.
 - While disabled, slider and entry changes do not send commands to the device.
@@ -226,20 +251,23 @@ These are restored automatically the next time you launch the dashboard.
 | `[DISCONNECTED]` in console | USB cable unplugged or board reset | Reconnect USB, click **Connect** again |
 | `pyserial is required` error | pyserial not installed | Run `pip install pyserial` |
 
-## CDC Command Quick Reference
+## CDC Command Quick Reference (SCPI)
 
 | Command | Description |
 |---------|-------------|
-| `status` | Read all measurements (capture state, freq, duty, period, pulse) |
-| `freq` | Read frequency only |
-| `duty` | Read duty cycle only |
-| `set pwmN freq <hz>` | Stage PWM frequency (N = 1 or 2) |
-| `set pwmN duty <0-10000>` | Stage PWM duty in 0.01% units |
-| `set pwmN enable <0\|1>` | Apply staged config and enable/disable |
-| `capture` | Read capture state (on/off) |
-| `set capture <on\|off>` | Enable or disable input capture |
-| `set edge <0\|1>` | Set capture edge (0 = rising, 1 = falling) |
-| `set tim_psc <0-65535>` | Set timer prescaler |
-| `set ic_psc <0-3>` | Set input capture prescaler |
-| `save` | Save all config to flash |
-| `help` | Show full command listing |
+| `*IDN?` | Device identification (manufacturer, model, serial, version) |
+| `*SAV` | Save all config to flash |
+| `*RST` | Software reset (MCU reboot) |
+| `MEAS:ALL?` | Read all measurements (capture, freq, duty, period, pulse) |
+| `MEAS:FREQ?` | Read frequency only |
+| `MEAS:DUTY?` | Read duty cycle only |
+| `SOUR:PWMn:FREQ <hz>` | Stage PWM frequency (n = 1 or 2) |
+| `SOUR:PWMn:DUTY <0-10000>` | Stage PWM duty in 0.01% units |
+| `SOUR:PWMn:ENAB <0\|1>` | Apply staged config and enable/disable |
+| `CAPT:ENAB <ON\|OFF>` | Enable or disable input capture |
+| `CAPT:EDGE <0\|1>` | Set capture edge (0 = rising, 1 = falling) |
+| `CAPT:TIM:PSC <0-65535>` | Set timer prescaler |
+| `CAPT:IC:PSC <0-3>` | Set input capture prescaler |
+| `SYST:NAME[?] ["name"]` | Query or set device nickname (max 16 chars) |
+| `SYST:NAME:DEF` | Reset nickname to serial number |
+| `SYST:HELP?` | Show full command listing |

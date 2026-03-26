@@ -3,14 +3,22 @@ cmake_minimum_required(VERSION 3.20)
 project(FanTestKit C ASM)
 
 # --- MCU flags (Cortex-M4 with hardware FPU) ---
-set(MCU_FLAGS "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard")
+set(MCU_FLAGS
+    -mcpu=cortex-m4
+    -mthumb
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=hard
+)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MCU_FLAGS} -fdata-sections -ffunction-sections -Wall")
-set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} ${MCU_FLAGS}")
+add_compile_options(${MCU_FLAGS} -fdata-sections -ffunction-sections -Wall)
 
 # Per-configuration flags
-set(CMAKE_C_FLAGS_DEBUG "-g3 -O0 -DDEBUG")
-set(CMAKE_C_FLAGS_RELEASE "-g0 -Os")
+add_compile_options(
+    $<$<CONFIG:Debug>:-g3>
+    $<$<CONFIG:Debug>:-O0>
+    $<$<CONFIG:Release>:-g0>
+    $<$<CONFIG:Release>:-Os>
+)
 
 # --- Preprocessor defines ---
 add_compile_definitions(
@@ -117,9 +125,9 @@ target_link_options(${PROJECT_NAME} PRIVATE
     -Wl,--print-memory-usage
     --specs=nano.specs
     --specs=nosys.specs
-    -lc
-    -lm
 )
+
+target_link_libraries(${PROJECT_NAME} PRIVATE c m)
 
 # Re-link when linker script changes
 set_target_properties(${PROJECT_NAME} PROPERTIES

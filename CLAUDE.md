@@ -140,7 +140,7 @@ All multi-byte values are little-endian. Config persists across power cycles via
 
 - **Kernel**: FreeRTOS v10.3.1 (native API, no CMSIS-RTOS wrapper), source in `Middlewares/Third_Party/FreeRTOS/Source/`
 - **Config**: `Core/Inc/FreeRTOSConfig.h` — 8KB heap, heap_4 allocator
-- **SysTick**: Custom `SysTick_Handler` in `stm32f4xx_it.c` calls `HAL_IncTick()` always, then `xPortSysTickHandler()` once scheduler is running
+- **SysTick**: Custom `SysTick_Handler` in `stm32f4xx_it.c` calls `HAL_IncTick()` always, then `xPortSysTickHandler()` once scheduler is running. Requires `extern void xPortSysTickHandler(void);` in USER CODE Includes — FreeRTOS does not expose this in any public header.
 
 | Task | Priority | Stack | Purpose |
 |------|----------|-------|---------|

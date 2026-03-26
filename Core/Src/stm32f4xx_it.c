@@ -27,6 +27,8 @@
 #include "stm32f4xx_hal_pcd.h"
 #include "FreeRTOS.h"
 #include "task.h"
+
+extern void xPortSysTickHandler(void);
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/

@@ -1,0 +1,6 @@
+{
+    "cmake.configureOnOpen": true,
+    "cmake.defaultConfigurePreset": "debug",
+    "cmake.defaultBuildPreset": "debug",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
+}

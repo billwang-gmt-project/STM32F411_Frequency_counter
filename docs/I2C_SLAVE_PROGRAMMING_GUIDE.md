@@ -812,7 +812,30 @@ To persist the current edge, prescaler, LED, **PWM**, and **nickname** settings 
 Write 0x30, 0x5A   → trigger flash save
 ```
 
-Settings saved: EDGE, TIM_PSC, IC_PSC, CAPTURE_CTRL, all LED parameters, all PWM parameters (FREQ_L, FREQ_H, DUTY, CTRL for both channels), TRIG_WIDTH.
+**Items saved to flash:**
+
+| # | Item | Register | Description |
+|---|------|----------|-------------|
+| 1 | EDGE | 0x10 | Capture edge (rising/falling) |
+| 2 | TIM_PSC | 0x11 | Timer prescaler (0–65535) |
+| 3 | IC_PSC | 0x13 | Input capture prescaler (DIV1–DIV8) |
+| 4 | CAPTURE_CTRL | 0x14 | Capture enable/disable |
+| 5 | LED_PERIOD | 0x20 | Status LED (PC13) blink period (ms) |
+| 6 | LED_DUTY | 0x22 | Status LED on-duty (%) |
+| 7 | LED_G_PERIOD | 0x23 | Green LED (PC14) blink period (ms) |
+| 8 | LED_G_DUTY | 0x25 | Green LED on-duty (%) |
+| 9 | LED_R_PERIOD | 0x26 | Red LED (PB10) blink period (ms) |
+| 10 | LED_R_DUTY | 0x28 | Red LED on-duty (%) |
+| 11 | PWM1_FREQ_L | 0x40 | PWM1 frequency low 16 bits (Hz) |
+| 12 | PWM1_FREQ_H | 0x42 | PWM1 frequency high 16 bits (Hz) |
+| 13 | PWM1_DUTY | 0x44 | PWM1 duty cycle (0–10000, 0.01% units) |
+| 14 | PWM1_CTRL | 0x46 | PWM1 enable/disable |
+| 15 | PWM2_FREQ_L | 0x4B | PWM2 frequency low 16 bits (Hz) |
+| 16 | PWM2_FREQ_H | 0x4D | PWM2 frequency high 16 bits (Hz) |
+| 17 | PWM2_DUTY | 0x4F | PWM2 duty cycle (0–10000, 0.01% units) |
+| 18 | PWM2_CTRL | 0x51 | PWM2 enable/disable |
+| 19 | TRIG_WIDTH | 0x56 | Trigger pulse width (1–1000 µs) |
+| 20 | NICKNAME | 0x60 | Device nickname (16 bytes, NUL-padded ASCII) |
 
 On next power-up, saved PWM outputs will automatically resume if CTRL bit0 was set when saved.
 

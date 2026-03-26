@@ -40,6 +40,29 @@ The CDC interface ignores baud rate, parity, and flow control settings from the 
 | `*SAV` | `OK` | Save all settings to flash |
 | `*RST` | *(device resets)* | Software reset (MCU reboot) |
 
+**Items saved by `*SAV`:**
+
+| # | Item | SCPI Command | Description |
+|---|------|-------------|-------------|
+| 1 | EDGE | `CAPT:EDGE` | Capture edge (rising/falling) |
+| 2 | TIM_PSC | `CAPT:TIM:PSC` | Timer prescaler (0–65535) |
+| 3 | IC_PSC | `CAPT:IC:PSC` | Input capture prescaler (DIV1–DIV8) |
+| 4 | CAPTURE_CTRL | `CAPT:ENAB` | Capture enable/disable |
+| 5 | LED_PERIOD | `LED:PER` | Status LED (PC13) blink period (ms) |
+| 6 | LED_DUTY | `LED:DUTY` | Status LED on-duty (%) |
+| 7 | LED_G_PERIOD | `LED:G:PER` | Green LED (PC14) blink period (ms) |
+| 8 | LED_G_DUTY | `LED:G:DUTY` | Green LED on-duty (%) |
+| 9 | LED_R_PERIOD | `LED:R:PER` | Red LED (PB10) blink period (ms) |
+| 10 | LED_R_DUTY | `LED:R:DUTY` | Red LED on-duty (%) |
+| 11 | PWM1_FREQ | `SOUR:PWM1:FREQ` | PWM1 frequency (Hz) |
+| 12 | PWM1_DUTY | `SOUR:PWM1:DUTY` | PWM1 duty cycle (0–10000, 0.01% units) |
+| 13 | PWM1_CTRL | `SOUR:PWM1:ENAB` | PWM1 enable/disable |
+| 14 | PWM2_FREQ | `SOUR:PWM2:FREQ` | PWM2 frequency (Hz) |
+| 15 | PWM2_DUTY | `SOUR:PWM2:DUTY` | PWM2 duty cycle (0–10000, 0.01% units) |
+| 16 | PWM2_CTRL | `SOUR:PWM2:ENAB` | PWM2 enable/disable |
+| 17 | TRIG_WIDTH | `TRIG:WIDT` | Trigger pulse width (1–1000 µs) |
+| 18 | NICKNAME | `SYST:NAME` | Device nickname (max 16 chars) |
+
 **`*IDN?` response example:**
 ```
 STMicroelectronics,FC-411,A1B2C3D4E5F6G7H8,26032600

@@ -23,7 +23,11 @@
       "Bash(grep -E \"\\\\.\\(c|h\\)$\")",
       "Bash(xargs grep:*)",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''tools/pwm_dashboard.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''tools/pwm_dashboard.py''\\).read\\(\\)\\); print\\(''Syntax OK - '' + str\\(len\\(open\\(''tools/pwm_dashboard.py''\\).readlines\\(\\)\\)\\) + '' lines''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''tools/pwm_dashboard.py''\\).read\\(\\)\\); print\\(''Syntax OK - '' + str\\(len\\(open\\(''tools/pwm_dashboard.py''\\).readlines\\(\\)\\)\\) + '' lines''\\)\")",
+      "Bash(xargs wc:*)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''tools/pwm_dashboard.py'', doraise=True\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''tools/pwm_dashboard.py'', doraise=True\\)\")",
+      "Bash(python:*)"
     ]
   }
 }

@@ -105,8 +105,16 @@ A register read is a two-step I2C transaction using repeated start:
 A register write sends the register address followed by the data in a single transaction:
 
 ```
-[START] [0x08 + W] [reg_addr] [data_0] [data_1] ... [STOP]
+[START] [0x08 + W] [reg_addr] [data_0] [data_1] [STOP]
 ```
+
+> **Important — fixed 2-byte data payload:** The I2C slave uses `HAL_I2C_Slave_Seq_Receive_IT(buf, 3)`, which expects exactly **3 bytes per write transaction** (1 address byte + 2 data bytes). For 1-byte registers (EDGE, IC_PSC, CAPTURE_CTRL, PWM_CTRL, SAVE_CFG, LED_DUTY), **always send 2 data bytes** — pad with `0x00`:
+>
+> ```
+> [START] [0x08 + W] [reg_addr] [value] [0x00] [STOP]
+> ```
+>
+> If only 1 data byte is sent, the slave's receive-complete callback will not fire and the write will be silently ignored.
 
 ---
 
@@ -210,11 +218,12 @@ uint8_t readReg8(uint8_t reg) {
     return Wire.available() ? Wire.read() : 0;
 }
 
-// Write a 1-byte register
+// Write a 1-byte register (must send 2 data bytes; slave expects 3-byte frame)
 void writeReg8(uint8_t reg, uint8_t value) {
     Wire.beginTransmission(FREQ_COUNTER_ADDR);
     Wire.write(reg);
     Wire.write(value);
+    Wire.write((uint8_t)0x00);  // padding byte — slave requires 2 data bytes
     Wire.endTransmission();
 }
 
@@ -295,8 +304,8 @@ def read_reg8(reg):
     return bus.read_byte(ADDR)
 
 def write_reg8(reg, value):
-    """Write a 1-byte register."""
-    bus.write_byte_data(ADDR, reg, value)
+    """Write a 1-byte register (padded to 2 bytes; slave expects 3-byte frame)."""
+    bus.write_i2c_block_data(ADDR, reg, [value, 0x00])
 
 def write_reg16(reg, value):
     """Write a 2-byte little-endian register."""
@@ -387,10 +396,11 @@ uint8_t FC_ReadReg8(uint8_t reg) {
     return val;
 }
 
-// Write a 1-byte register
+// Write a 1-byte register (must send 2 data bytes; slave expects 3-byte frame)
 void FC_WriteReg8(uint8_t reg, uint8_t value) {
+    uint8_t buf[2] = { value, 0x00 };
     HAL_I2C_Mem_Write(&hi2c1, FC_ADDR, reg, I2C_MEMADD_SIZE_8BIT,
-                      &value, 1, 100);
+                      buf, 2, 100);
 }
 
 // Write a 2-byte register
@@ -486,7 +496,7 @@ def read_reg8(reg):
     return i2c.readfrom(ADDR, 1)[0]
 
 def write_reg8(reg, val):
-    i2c.writeto(ADDR, bytes([reg, val]))
+    i2c.writeto(ADDR, bytes([reg, val, 0x00]))  # pad to 2 data bytes
 
 def write_reg16(reg, val):
     i2c.writeto(ADDR, bytes([reg]) + struct.pack('<H', val))
@@ -560,7 +570,7 @@ void WriteFreq(byte regL, uint freqHz) {
 WriteFreq(0x40, 1000);
 byte[] duty = BitConverter.GetBytes((ushort)5000);
 i2c.Write(ADDR, new byte[] { 0x44, duty[0], duty[1] });  // DUTY = 5000
-i2c.Write(ADDR, new byte[] { 0x46, 0x01 });               // CTRL = enable + apply
+i2c.Write(ADDR, new byte[] { 0x46, 0x01, 0x00 });         // CTRL = enable + apply (padded to 2 data bytes)
 
 // Read back auto-computed PSC and ARR
 i2c.Write(ADDR, new byte[] { 0x47 });
@@ -573,6 +583,8 @@ Console.WriteLine($"PSC={psc}, ARR={arr}");
 ---
 
 ## Common Operations
+
+> **Reminder:** All write examples below use shorthand notation. For 1-byte registers, remember to pad the data to 2 bytes (e.g., `Write 0x10, 0x01` means sending `[0x10, 0x01, 0x00]` on the bus).
 
 ### 1. Read All Measurements (Burst Read)
 
@@ -896,6 +908,7 @@ Or burst read 9 bytes from `0x20` to get all LED config, or 11 bytes from `0x40`
 | I2C hangs | Bus stuck, missing pull-ups | Power cycle both devices, check pull-up resistors |
 | Reads return stale data | Polling too fast after reconfig | Wait at least one signal period after config change |
 | PWM output stays off | CTRL not written after FREQ/DUTY | Write CTRL with bit0=1 to apply staged values |
+| Write to 1-byte register ignored | Only 1 data byte sent | Slave expects 2 data bytes per write; pad with `0x00` (see "Writing a Register") |
 | PWM frequency incorrect | Only FREQ_L written, FREQ_H stale | Always write both FREQ_L and FREQ_H before CTRL |
 | PWM PSC/ARR read as 0 | Frequency out of range or disabled | Check CTRL bit0; verify frequency is 2 Hz–50 MHz |
 | No trigger pulse on PA7 | CTRL not written, or pulse too short | Write CTRL to trigger; increase TRIG_WIDTH if needed |

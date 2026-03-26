@@ -286,7 +286,7 @@ If `CAPT:TIM:PSC` is set to N, divide the clock by (N+1).
 
 ### IC Prescaler Effect
 
-When `CAPT:IC:PSC > 0`, the hardware captures every N-th edge (N = 1, 2, 4, or 8). The `MEAS:FREQ?` and `MEAS:DUTY?` responses are **automatically compensated** -- they always report the true single-cycle values. The `MEAS:PER?` and `MEAS:PULS?` tick values span N signal cycles; to get single-cycle values, divide by N (where N = 2^ic_psc).
+In slave-reset mode the counter resets on every signal edge regardless of IC prescaler. The IC prescaler only reduces how often the capture interrupt fires (every N-th edge). All measurement values (`MEAS:FREQ?`, `MEAS:DUTY?`, `MEAS:PER?`, `MEAS:PULS?`) always reflect single-cycle values — no host-side compensation is needed.
 
 ## Data Flow Overview
 

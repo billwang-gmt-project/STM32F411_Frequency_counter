@@ -266,7 +266,7 @@ Features: PWM output control, real-time measurement display, capture edge select
 
 For very high frequency signals where resolution is sufficient, increase TIM_PSC to extend the measurable range or reduce interrupt rate. For example, TIM_PSC=99 gives a 1 MHz timer clock (1 us resolution).
 
-The IC prescaler captures every Nth edge (DIV1/2/4/8), useful for reducing interrupt load on high-frequency signals.
+The IC prescaler (DIV1/2/4/8) reduces capture interrupt rate for high-frequency signals. In slave-reset mode the counter still resets every signal cycle, so all measurement values remain single-cycle — no host-side compensation needed.
 
 ## Software Architecture
 

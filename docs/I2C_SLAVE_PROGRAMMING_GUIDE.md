@@ -127,11 +127,11 @@ Default `TIM_PSC = 0` → timer clock = 96 MHz → tick resolution ≈ 10.4 ns.
 | Value | Formula | Example |
 |-------|---------|---------|
 | **Frequency** | `FREQ` register gives Hz directly | `FREQ = 1000` → 1 kHz |
-| **Period (seconds)** | `PERIOD / timer_clock / ic_div` | `PERIOD = 100000, PSC = 0, IC_PSC = 0` → 1 ms |
+| **Period (seconds)** | `PERIOD / timer_clock` | `PERIOD = 100000, PSC = 0` → 1 ms |
 | **Duty cycle (%)** | `DUTY / 100.0` | `DUTY = 5000` → 50.00% |
 | **Pulse width (seconds)** | `PULSE / timer_clock` | `PULSE = 50000, PSC = 0` → 500 µs |
 
-`ic_div` = 1, 2, 4, or 8 depending on IC_PSC. FREQ and DUTY are automatically compensated by the firmware — no host-side correction needed. PERIOD and PULSE are raw tick counts that span `ic_div` signal cycles when IC_PSC > 0.
+In slave-reset mode the counter resets every signal cycle regardless of IC prescaler. All four registers (FREQ, DUTY, PERIOD, PULSE) always reflect single-cycle values — no host-side compensation is needed. The IC prescaler only reduces how often the capture interrupt fires.
 
 ### IC Prescaler Values
 
@@ -652,7 +652,7 @@ Use the IC prescaler to reduce interrupt rate:
 Write 0x13, 0x03   → capture every 8th edge (DIV8)
 ```
 
-**Note:** With IC prescaler > 0, the firmware automatically compensates FREQ and DUTY — they always reflect the true single-cycle values. PERIOD and PULSE are raw tick counts spanning N signal cycles (e.g. 8 periods apart for DIV8). To get the single-cycle period: `PERIOD / ic_div` where `ic_div` = 1, 2, 4, or 8.
+**Note:** In slave-reset mode the counter resets every signal cycle regardless of IC prescaler. All measurement registers (FREQ, DUTY, PERIOD, PULSE) always reflect single-cycle values — no host-side compensation is needed. The IC prescaler only reduces interrupt rate.
 
 ### 7. Read / Write Device Nickname
 

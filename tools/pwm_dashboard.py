@@ -707,6 +707,8 @@ class PwmDashboardApp(tk.Tk):
     def _query_device_state(self):
         self._enqueue_query("CAPT:ENAB?\n", self._handle_capt_enab)
         self._enqueue_query("CAPT:EDGE?\n", self._handle_capt_edge)
+        self._enqueue_query("CAPT:TIM:PSC?\n", self._handle_tim_psc)
+        self._enqueue_query("CAPT:IC:PSC?\n", self._handle_ic_psc)
         self._enqueue_query("SOUR:PWM1:FREQ?\n", self._handle_pwm1_freq)
         self._enqueue_query("SOUR:PWM1:DUTY?\n", self._handle_pwm1_duty)
         self._enqueue_query("SOUR:PWM1:ENAB?\n", self._handle_pwm1_enab)
@@ -726,6 +728,21 @@ class PwmDashboardApp(tk.Tk):
     def _handle_capt_edge(self, resp):
         val = resp.strip()
         self._edge_var.set("Falling" if val == "1" else "Rising")
+
+    def _handle_tim_psc(self, resp):
+        try:
+            self._tim_psc_var.set(str(int(resp.strip())))
+        except ValueError:
+            pass
+
+    def _handle_ic_psc(self, resp):
+        try:
+            val = int(resp.strip())
+            label = self._IC_PSC_RMAP.get(val)
+            if label:
+                self._ic_psc_var.set(label)
+        except ValueError:
+            pass
 
     def _handle_pwm1_freq(self, resp):
         self._pwm1_panel.set_freq(resp.strip())
@@ -833,6 +850,29 @@ class PwmDashboardApp(tk.Tk):
         )
         self._edge_combo.pack(side="left", padx=2)
         self._edge_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_edge())
+
+        ttk.Label(ctrl_frame, text="TIM PSC:").pack(side="left", padx=(8, 2))
+        self._tim_psc_var = tk.StringVar(value="0")
+        self._tim_psc_spin = ttk.Spinbox(
+            ctrl_frame, textvariable=self._tim_psc_var,
+            from_=0, to=65535, increment=1, width=6,
+        )
+        self._tim_psc_spin.pack(side="left", padx=2)
+        self._tim_psc_spin.bind("<Return>", lambda e: self._apply_tim_psc())
+        self._tim_psc_btn = ttk.Button(
+            ctrl_frame, text="Set", width=3, command=self._apply_tim_psc,
+        )
+        self._tim_psc_btn.pack(side="left", padx=(0, 2))
+
+        IC_PSC_VALUES = ["\u00f71", "\u00f72", "\u00f74", "\u00f78"]
+        ttk.Label(ctrl_frame, text="IC PSC:").pack(side="left", padx=(8, 2))
+        self._ic_psc_var = tk.StringVar(value=IC_PSC_VALUES[0])
+        self._ic_psc_combo = ttk.Combobox(
+            ctrl_frame, textvariable=self._ic_psc_var,
+            values=IC_PSC_VALUES, width=4, state="readonly",
+        )
+        self._ic_psc_combo.pack(side="left", padx=2)
+        self._ic_psc_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_ic_psc())
 
         ttk.Separator(ctrl_frame, orient="vertical").pack(
             side="left", fill="y", padx=6, pady=2
@@ -1041,6 +1081,22 @@ class PwmDashboardApp(tk.Tk):
         val = 0 if self._edge_var.get() == "Rising" else 1
         self._send_cmd(f"CAPT:EDGE {val}\n")
 
+    def _apply_tim_psc(self):
+        try:
+            val = int(self._tim_psc_var.get())
+        except ValueError:
+            return
+        if 0 <= val <= 65535:
+            self._send_cmd(f"CAPT:TIM:PSC {val}\n")
+
+    _IC_PSC_MAP = {"\u00f71": 0, "\u00f72": 1, "\u00f74": 2, "\u00f78": 3}
+    _IC_PSC_RMAP = {0: "\u00f71", 1: "\u00f72", 2: "\u00f74", 3: "\u00f78"}
+
+    def _apply_ic_psc(self):
+        val = self._IC_PSC_MAP.get(self._ic_psc_var.get())
+        if val is not None:
+            self._send_cmd(f"CAPT:IC:PSC {val}\n")
+
     # -- enable/disable controls --
 
     def _set_controls_enabled(self, enabled):
@@ -1048,6 +1104,10 @@ class PwmDashboardApp(tk.Tk):
         self._pwm2_panel.set_controls_enabled(enabled)
         state = "!disabled" if enabled else "disabled"
         self._capture_chk.state([state])
+        self._edge_combo.configure(state="readonly" if enabled else "disabled")
+        self._tim_psc_spin.configure(state="normal" if enabled else "disabled")
+        self._tim_psc_btn.state([state])
+        self._ic_psc_combo.configure(state="readonly" if enabled else "disabled")
 
     # -- settings persistence --
 

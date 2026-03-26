@@ -14,7 +14,8 @@
                 "target/stm32f4x.cfg"
             ],
             "runToEntryPoint": "main",
-            "showDevDebugOutput": "none",
+            "svdFile": "STM32F411.svd",
+            "showDevDebugOutput": "parsed",
             "preLaunchTask": "Build (Debug)"
         }
     ]

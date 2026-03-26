@@ -41,6 +41,7 @@ DUTY_STEPS = [0.1, 1.0, 5.0, 10.0]
 REFRESH_INTERVALS = [100, 200, 500, 1000, 2000]
 
 CONSOLE_MAX_LINES = 5000
+QUERY_TIMEOUT_S = 2.0
 
 # ---------------------------------------------------------------------------
 #  Response Parser (SCPI format)
@@ -287,12 +288,14 @@ class PwmControlPanel(ttk.LabelFrame):
         self._duty_slider.grid(row=row, column=0, columnspan=4, sticky="ew", **pad)
         self._duty_slider.set(50)
 
-        # --- Enable/Disable button ---
+        # --- Enable checkbox ---
         row = 4
-        self._enable_btn = ttk.Button(
-            self, text="Enable", command=self._toggle_enable
+        self._enable_var = tk.BooleanVar(value=False)
+        self._enable_chk = ttk.Checkbutton(
+            self, text="Enabled", variable=self._enable_var,
+            command=self._on_enable_toggle,
         )
-        self._enable_btn.grid(row=row, column=0, columnspan=4, sticky="ew", **pad)
+        self._enable_chk.grid(row=row, column=0, columnspan=4, sticky="w", **pad)
 
         # column weights
         self.columnconfigure(1, weight=1)
@@ -368,11 +371,8 @@ class PwmControlPanel(ttk.LabelFrame):
         self._send(f"SOUR:{self._ch}:DUTY {duty_centipct}\n")
         self._send(f"SOUR:{self._ch}:ENAB 1\n")
 
-    def _toggle_enable(self):
-        self._enabled = not self._enabled
-        self._enable_btn.configure(
-            text="Disable" if self._enabled else "Enable"
-        )
+    def _on_enable_toggle(self):
+        self._enabled = self._enable_var.get()
         if self._enabled:
             self._apply_pwm()
         else:
@@ -409,9 +409,33 @@ class PwmControlPanel(ttk.LabelFrame):
             self._duty_step_var.set(state["duty_step"])
         if "enabled" in state:
             self._enabled = state["enabled"]
-            self._enable_btn.configure(
-                text="Disable" if self._enabled else "Enable"
-            )
+            self._enable_var.set(self._enabled)
+
+    # -- public setters (GUI sync from device, no commands sent) --
+
+    def set_freq(self, freq_str):
+        self._freq_var.set(freq_str)
+        try:
+            self._freq_slider.set(int(freq_str))
+        except (ValueError, tk.TclError):
+            pass
+        if self._freq_debounce_id is not None:
+            self.after_cancel(self._freq_debounce_id)
+            self._freq_debounce_id = None
+
+    def set_duty(self, duty_str):
+        self._duty_var.set(duty_str)
+        try:
+            self._duty_slider.set(float(duty_str))
+        except (ValueError, tk.TclError):
+            pass
+        if self._duty_debounce_id is not None:
+            self.after_cancel(self._duty_debounce_id)
+            self._duty_debounce_id = None
+
+    def set_enabled(self, enabled):
+        self._enabled = enabled
+        self._enable_var.set(enabled)
 
     def set_controls_enabled(self, enabled):
         state = "!disabled" if enabled else "disabled"
@@ -440,7 +464,9 @@ class PwmDashboardApp(tk.Tk):
         self._refresh_after_id = None
         self._capture_on = True  # mirrors device state
         self._connected_device_info = None
-        self._pending_nickname_query = False
+        self._query_queue = []          # [(cmd_str, handler_callable), ...]
+        self._pending_query = None      # (cmd_str, handler) or None
+        self._pending_query_time = 0.0  # time.monotonic() when sent
 
         self._build_fonts()
         self._build_ui()
@@ -570,10 +596,11 @@ class PwmDashboardApp(tk.Tk):
                 self._serial.connect(port)
                 self._connected_device_info = info
                 self._update_connection_status(True)
-                # show device info and query nickname for FC-411 devices
+                # show device info and query state for FC-411 devices
                 if info and info["is_target"]:
                     self._show_device_info(info)
                     self._query_nickname()
+                    self._query_device_state()
             except Exception as e:
                 self._console_append(f"[ERROR] {e}\n")
                 self._update_connection_status(False)
@@ -585,7 +612,6 @@ class PwmDashboardApp(tk.Tk):
             )
             self._connect_btn.configure(text="Disconnect")
             self._set_controls_enabled(True)
-            self._schedule_refresh()
         else:
             self._status_label.configure(
                 text="  Disconnected  ", foreground="red"
@@ -609,29 +635,123 @@ class PwmDashboardApp(tk.Tk):
     def _hide_device_info(self):
         self._device_info_frame.grid_remove()
         self._connected_device_info = None
-        self._pending_nickname_query = False
+        self._query_queue.clear()
+        self._pending_query = None
         self._nickname_var.set("")
 
+    # --- Query Queue ---
+
+    def _enqueue_query(self, cmd, handler):
+        self._query_queue.append((cmd, handler))
+        if self._pending_query is None:
+            self._dispatch_next_query()
+
+    def _dispatch_next_query(self):
+        if self._query_queue and self._pending_query is None:
+            cmd, handler = self._query_queue.pop(0)
+            self._pending_query = (cmd, handler)
+            self._pending_query_time = time.monotonic()
+            self._send_cmd(cmd)
+        elif not self._query_queue and self._pending_query is None:
+            # query burst done — start auto-refresh if applicable
+            self._schedule_refresh()
+
+    def _check_pending_query(self):
+        if self._pending_query is None:
+            return
+        # skip empty lines (firmware prepends \r\n before each response)
+        while True:
+            idx = self._rx_buffer.find("\n")
+            if idx < 0:
+                break
+            line = self._rx_buffer[:idx].rstrip("\r")
+            self._rx_buffer = self._rx_buffer[idx + 1:]
+            if line:
+                _, handler = self._pending_query
+                self._pending_query = None
+                try:
+                    handler(line)
+                except Exception:
+                    pass
+                self._dispatch_next_query()
+                return
+        # no complete non-empty line yet — check timeout
+        if time.monotonic() - self._pending_query_time > QUERY_TIMEOUT_S:
+            cmd, _ = self._pending_query
+            self._pending_query = None
+            self._console_append(f"[TIMEOUT] {cmd.strip()}\n")
+            self._dispatch_next_query()
+
+    # --- Nickname ---
+
     def _query_nickname(self):
-        self._pending_nickname_query = True
-        self._send_cmd("SYST:NAME?\n")
+        self._enqueue_query("SYST:NAME?\n", self._handle_nickname_resp)
 
     def _apply_nickname(self):
         nick = self._nickname_var.get().strip()[:16]
         if nick:
-            self._pending_nickname_query = True
-            self._send_cmd(f'SYST:NAME "{nick}"\n')
+            self._enqueue_query(f'SYST:NAME "{nick}"\n', self._handle_nickname_resp)
 
     def _reset_nickname(self):
-        self._pending_nickname_query = True
-        self._send_cmd("SYST:NAME:DEF\n")
+        self._enqueue_query("SYST:NAME:DEF\n", self._handle_nickname_resp)
 
-    def _try_parse_nickname(self):
-        nick, end = ResponseParser.parse_nickname(self._rx_buffer)
-        if nick is not None:
-            self._nickname_var.set(nick)
-            self._pending_nickname_query = False
-            self._rx_buffer = self._rx_buffer[end:]
+    def _handle_nickname_resp(self, resp):
+        text = resp.strip()
+        if text.startswith('"') and text.endswith('"'):
+            text = text[1:-1]
+        if text:
+            self._nickname_var.set(text)
+
+    # --- Device State Query on Connect ---
+
+    def _query_device_state(self):
+        self._enqueue_query("CAPT:ENAB?\n", self._handle_capt_enab)
+        self._enqueue_query("CAPT:EDGE?\n", self._handle_capt_edge)
+        self._enqueue_query("SOUR:PWM1:FREQ?\n", self._handle_pwm1_freq)
+        self._enqueue_query("SOUR:PWM1:DUTY?\n", self._handle_pwm1_duty)
+        self._enqueue_query("SOUR:PWM1:ENAB?\n", self._handle_pwm1_enab)
+        self._enqueue_query("SOUR:PWM2:FREQ?\n", self._handle_pwm2_freq)
+        self._enqueue_query("SOUR:PWM2:DUTY?\n", self._handle_pwm2_duty)
+        self._enqueue_query("SOUR:PWM2:ENAB?\n", self._handle_pwm2_enab)
+
+    def _handle_capt_enab(self, resp):
+        val = resp.strip().upper()
+        self._capture_on = (val == "ON")
+        self._update_capture_ui()
+        if self._capture_on:
+            self._schedule_refresh()
+        else:
+            self._cancel_refresh()
+
+    def _handle_capt_edge(self, resp):
+        val = resp.strip()
+        self._edge_var.set("Falling" if val == "1" else "Rising")
+
+    def _handle_pwm1_freq(self, resp):
+        self._pwm1_panel.set_freq(resp.strip())
+
+    def _handle_pwm1_duty(self, resp):
+        try:
+            centipct = int(resp.strip())
+            self._pwm1_panel.set_duty(f"{centipct / 100:.2f}")
+        except ValueError:
+            pass
+
+    def _handle_pwm1_enab(self, resp):
+        self._pwm1_panel.set_enabled(resp.strip() == "1")
+
+    def _handle_pwm2_freq(self, resp):
+        self._pwm2_panel.set_freq(resp.strip())
+
+    def _handle_pwm2_duty(self, resp):
+        try:
+            centipct = int(resp.strip())
+            self._pwm2_panel.set_duty(f"{centipct / 100:.2f}")
+        except ValueError:
+            pass
+
+    def _handle_pwm2_enab(self, resp):
+        self._pwm2_panel.set_enabled(resp.strip() == "1")
 
     # --- PWM Panels ---
 
@@ -695,11 +815,12 @@ class PwmDashboardApp(tk.Tk):
         ctrl_frame = ttk.Frame(frame)
         ctrl_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=(0, 4))
 
-        self._capture_btn = ttk.Button(
-            ctrl_frame, text="Capture: ON", width=14,
-            command=self._toggle_capture,
+        self._capture_var = tk.BooleanVar(value=True)
+        self._capture_chk = ttk.Checkbutton(
+            ctrl_frame, text="Capture", variable=self._capture_var,
+            command=self._on_capture_toggle,
         )
-        self._capture_btn.pack(side="left", padx=4)
+        self._capture_chk.pack(side="left", padx=4)
 
         ttk.Label(ctrl_frame, text="Edge:").pack(side="left", padx=(8, 2))
         self._edge_var = tk.StringVar(value="Rising")
@@ -842,8 +963,7 @@ class PwmDashboardApp(tk.Tk):
             if text:
                 self._console_append(text)
                 self._rx_buffer += text
-                if self._pending_nickname_query:
-                    self._try_parse_nickname()
+                self._check_pending_query()
                 self._try_parse_measurements()
                 # trim buffer
                 if len(self._rx_buffer) > 4096:
@@ -893,7 +1013,8 @@ class PwmDashboardApp(tk.Tk):
             self._do_refresh()
 
     def _do_refresh(self):
-        if self._serial.is_connected() and self._capture_on:
+        if self._serial.is_connected() and self._capture_on \
+                and self._pending_query is None and not self._query_queue:
             self._send_cmd("MEAS:ALL?\n")
         if self._auto_refresh.get() and self._serial.is_connected() and self._capture_on:
             ms = self._get_refresh_ms()
@@ -903,21 +1024,18 @@ class PwmDashboardApp(tk.Tk):
         if self._serial.is_connected():
             self._send_cmd("MEAS:ALL?\n")
 
-    def _toggle_capture(self):
-        new_state = not self._capture_on
-        cmd = "CAPT:ENAB ON\n" if new_state else "CAPT:ENAB OFF\n"
+    def _on_capture_toggle(self):
+        self._capture_on = self._capture_var.get()
+        cmd = "CAPT:ENAB ON\n" if self._capture_on else "CAPT:ENAB OFF\n"
         self._send_cmd(cmd)
-        self._capture_on = new_state
-        self._update_capture_ui()
         # stop polling when capture off, resume when on
-        if new_state:
+        if self._capture_on:
             self._schedule_refresh()
         else:
             self._cancel_refresh()
 
     def _update_capture_ui(self):
-        text = "Capture: ON" if self._capture_on else "Capture: OFF"
-        self._capture_btn.configure(text=text)
+        self._capture_var.set(self._capture_on)
 
     def _apply_edge(self):
         val = 0 if self._edge_var.get() == "Rising" else 1
@@ -929,7 +1047,7 @@ class PwmDashboardApp(tk.Tk):
         self._pwm1_panel.set_controls_enabled(enabled)
         self._pwm2_panel.set_controls_enabled(enabled)
         state = "!disabled" if enabled else "disabled"
-        self._capture_btn.state([state])
+        self._capture_chk.state([state])
 
     # -- settings persistence --
 

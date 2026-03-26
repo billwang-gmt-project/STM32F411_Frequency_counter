@@ -33,7 +33,22 @@
       "Bash(grep -r \"Frequency\\\\|frequency\" /d/github/STM32F411_Frequency_counter --include=*.c --include=*.h --include=*.md --include=*.py)",
       "Bash(grep:*)",
       "Bash(git:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(arm-none-eabi-gcc --version)",
+      "Bash(cmake --version)",
+      "Bash(ninja --version)",
+      "Bash(openocd --version)",
+      "Bash(winget install:*)",
+      "Bash(winget search:*)",
+      "Bash(ARM_BIN=\"/c/Program Files \\(x86\\)/Arm GNU Toolchain arm-none-eabi/12.2 mpacbti-rel1/bin\" \"$ARM_BIN/arm-none-eabi-gcc.exe\" --version)",
+      "Bash(find '/c/Program Files' -name cmake.exe -path */bin/*)",
+      "Read(//c/Users/billw/AppData/Local/**)",
+      "Bash(export PATH=\"/c/Program Files \\(x86\\)/Arm GNU Toolchain arm-none-eabi/12.2 mpacbti-rel1/bin:/c/Program Files/CMake/bin:/c/Users/billw/AppData/Local/Microsoft/WinGet/Packages/Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe:/c/Users/billw/AppData/Local/Microsoft/WinGet/Packages/xpack-dev-tools.openocd-xpack_Microsoft.Winget.Source_8wekyb3d8bbwe/xpack-openocd-0.12.0-7/bin:$PATH\" echo \"=== arm-none-eabi-gcc ===\")",
+      "Read(//d/github/FanTestKit-411/**)",
+      "Bash(ninja --version echo \"=== openocd ===\")",
+      "Bash(export PATH=\"/c/Program Files \\(x86\\)/Arm GNU Toolchain arm-none-eabi/12.2 mpacbti-rel1/bin:/c/Program Files/CMake/bin:/c/Users/billw/AppData/Local/Microsoft/WinGet/Packages/Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe:/c/Users/billw/AppData/Local/Microsoft/WinGet/Packages/xpack-dev-tools.openocd-xpack_Microsoft.Winget.Source_8wekyb3d8bbwe/xpack-openocd-0.12.0-7/bin:$PATH\")",
+      "Bash(cmake --preset debug)",
+      "Bash(tr ';' '\\\\n')"
     ]
   }
 }

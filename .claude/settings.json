@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/billw/**)",
+      "Read(//c/ST/**)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)"
+    ],
+    "additionalDirectories": [
+      "C:\\ST\\STM32CubeIDE_1.19.0\\STM32CubeIDE\\plugins\\com.st.stm32cube.ide.mcu.productdb.debug_2.2.200.202506131328\\resources\\cmsis\\STMicroelectronics_CMSIS_SVD"
+    ]
+  }
+}

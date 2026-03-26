@@ -13,3 +13,6 @@ __pycache__/
 # .cproject
 # .project
 # .mxproject
+
+# CMake build output
+build/

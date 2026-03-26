@@ -105,7 +105,7 @@ extern char g_nickname[];
 
 /* ---- Extern side-effect functions (defined in main.c) ---- */
 
-extern void FreqCounter_Reconfigure(void);
+extern void Capture_Reconfigure(void);
 extern void PWM_Apply_Ext(uint8_t pwm_num);
 extern void Config_Save(void);
 extern void Trigger_Pulse(void);
@@ -208,7 +208,7 @@ uint8_t RegMap_Write(uint8_t reg_addr, const uint8_t *data, uint8_t data_len)
     if (data[0] != g_edge_config)
     {
       g_edge_config = data[0];
-      FreqCounter_Reconfigure();
+      Capture_Reconfigure();
     }
     break;
 
@@ -220,7 +220,7 @@ uint8_t RegMap_Write(uint8_t reg_addr, const uint8_t *data, uint8_t data_len)
     if (new_psc != g_tim_psc)
     {
       g_tim_psc = new_psc;
-      FreqCounter_Reconfigure();
+      Capture_Reconfigure();
     }
     break;
   }
@@ -230,7 +230,7 @@ uint8_t RegMap_Write(uint8_t reg_addr, const uint8_t *data, uint8_t data_len)
     if (data[0] != g_ic_psc)
     {
       g_ic_psc = data[0];
-      FreqCounter_Reconfigure();
+      Capture_Reconfigure();
     }
     break;
 
@@ -239,7 +239,7 @@ uint8_t RegMap_Write(uint8_t reg_addr, const uint8_t *data, uint8_t data_len)
     if (data[0] != g_capture_enabled)
     {
       g_capture_enabled = data[0];
-      FreqCounter_Reconfigure();
+      Capture_Reconfigure();
     }
     break;
 

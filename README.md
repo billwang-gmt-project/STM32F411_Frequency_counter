@@ -1,6 +1,6 @@
-# STM32F411 Frequency Counter
+# STM32F411 FanTestKit
 
-A frequency counter with I2C slave + USB CDC + USB HID interfaces built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. Also provides two independent PWM outputs with auto-prescaler for maximum resolution. A host MCU reads measurements, configures settings, and controls PWM outputs over I2C, USB CDC text console (SCPI), or USB HID binary register access. All configuration is persistable to flash. Runs on FreeRTOS.
+A FanTestKit with I2C slave + USB CDC + USB HID interfaces built on the STM32F411CEUx (WeAct BlackPill or similar). Measures frequency, period, duty cycle, and pulse width using TIM2 input capture in PWM Input mode. Also provides two independent PWM outputs with auto-prescaler for maximum resolution. A host MCU reads measurements, configures settings, and controls PWM outputs over I2C, USB CDC text console (SCPI), or USB HID binary register access. All configuration is persistable to flash. Runs on FreeRTOS.
 
 ## Hardware
 
@@ -19,7 +19,7 @@ A frequency counter with I2C slave + USB CDC + USB HID interfaces built on the S
 - MCU: STM32F411CEUx, 96 MHz (HSE 25 MHz + PLL)
 - TIM2 timer clock: 96 MHz (default prescaler = 0)
 - I2C1: 400 kHz fast mode, 7-bit addressing
-- USB: Composite device (CDC + HID), VID `0x0483`, PID `0x5741`, product "FC-411 USB Composite"
+- USB: Composite device (CDC + HID), VID `0x0483`, PID `0x5741`, product "FanTestKit-411 USB Composite"
 
 > **Note:** External pull-up resistors (e.g., 4.7k) are required on SDA/PB7 and SCL/PB8 since the GPIOs are configured as open-drain with no internal pull-ups.
 
@@ -140,13 +140,13 @@ See [docs/HOST_PROGRAMMING_GUIDE.md](docs/HOST_PROGRAMMING_GUIDE.md) for detaile
 ```cpp
 #include <Wire.h>
 
-#define FREQ_COUNTER_ADDR 0x08
+#define FANTEST_ADDR 0x08
 
 uint32_t readRegister32(uint8_t reg) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.endTransmission(false);  // repeated start
-    Wire.requestFrom(FREQ_COUNTER_ADDR, 4);
+    Wire.requestFrom(FANTEST_ADDR, 4);
     uint32_t val = 0;
     for (int i = 0; i < 4 && Wire.available(); i++) {
         val |= (uint32_t)Wire.read() << (i * 8);
@@ -155,7 +155,7 @@ uint32_t readRegister32(uint8_t reg) {
 }
 
 void writeRegister8(uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.write(val);
     Wire.endTransmission();
@@ -284,7 +284,7 @@ ISR callbacks (TIM2 input capture, I2C slave protocol) run at high NVIC priority
 
 Requires **STM32CubeIDE**. Import the project and build the Debug or Release configuration.
 
-The CubeMX configuration file is `Frequency_Counter.ioc`. After regenerating code from CubeMX, re-apply FreeRTOS handler changes in `stm32f4xx_it.c` (see CLAUDE.md for details).
+The CubeMX configuration file is `FanTestKit.ioc`. After regenerating code from CubeMX, re-apply FreeRTOS handler changes in `stm32f4xx_it.c` (see CLAUDE.md for details).
 
 ## License
 

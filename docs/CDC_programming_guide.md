@@ -1,6 +1,6 @@
 # CDC Programming Guide (Host Side)
 
-USB CDC serial console for the STM32F411 Frequency Counter. The device enumerates as a USB composite device (CDC + HID); this guide covers the **CDC virtual COM port** interface only.
+USB CDC serial console for the STM32F411 FanTestKit. The device enumerates as a USB composite device (CDC + HID); this guide covers the **CDC virtual COM port** interface only.
 
 Commands follow **IEEE 488.2 / SCPI** conventions.
 
@@ -11,7 +11,7 @@ Commands follow **IEEE 488.2 / SCPI** conventions.
 | VID | `0x0483` (STMicroelectronics) |
 | PID | `0x5741` |
 | Device class | `0xEF` (Miscellaneous / IAD) |
-| Product string | `FC-411 USB Composite` |
+| Product string | `FanTestKit-411 USB Composite` |
 | Serial number | Derived from STM32 96-bit UID |
 | CDC interface | ACM (Abstract Control Model) |
 
@@ -65,7 +65,7 @@ The CDC interface ignores baud rate, parity, and flow control settings from the 
 
 **`*IDN?` response example:**
 ```
-STMicroelectronics,FC-411,A1B2C3D4E5F6G7H8,26032600
+STMicroelectronics,FanTestKit-411,A1B2C3D4E5F6G7H8,26032600
 ```
 
 ## MEASure Subsystem (Read-Only)

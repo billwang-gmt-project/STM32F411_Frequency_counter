@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-STM32F411CEUx frequency counter with I2C slave + USB CDC + USB HID interfaces. Measures signal frequency, period, duty cycle, and pulse width on PA15, plus two independent PWM outputs (PA8, PB6) with auto-prescaler — all controllable via I2C register-based protocol at slave address 0x08, USB CDC text console, or USB HID binary register access.
+STM32F411CEUx FanTestKit with I2C slave + USB CDC + USB HID interfaces. Measures signal frequency, period, duty cycle, and pulse width on PA15, plus two independent PWM outputs (PA8, PB6) with auto-prescaler — all controllable via I2C register-based protocol at slave address 0x08, USB CDC text console, or USB HID binary register access.
 
 ## Build
 
@@ -14,7 +14,7 @@ This is an **STM32CubeIDE** managed project (no standalone Makefile/CMake). Buil
 # Build from command line (requires STM32CubeIDE installed)
 stm32cubeide --launcher.suppressErrors -nosplash \
   -application org.eclipse.cdt.managedbuilder.core.headlessbuild \
-  -data /tmp/workspace -import . -build Frequency_Counter/Debug
+  -data /tmp/workspace -import . -build FanTestKit/Debug
 ```
 
 Target: STM32F411CEUx (Cortex-M4, 512KB Flash, 128KB RAM)
@@ -25,7 +25,7 @@ Linker script: `STM32F411CEUX_FLASH.ld`
 
 ### CubeMX Code Generation
 
-The `.ioc` file (`Frequency_Counter.ioc`) drives code generation. All peripheral init files are CubeMX-generated. **Custom code must go inside `/* USER CODE BEGIN/END */` blocks** to survive regeneration.
+The `.ioc` file (`FanTestKit.ioc`) drives code generation. All peripheral init files are CubeMX-generated. **Custom code must go inside `/* USER CODE BEGIN/END */` blocks** to survive regeneration.
 
 ### Clock Tree
 
@@ -134,7 +134,7 @@ All multi-byte values are little-endian. Config persists across power cycles via
 - **USB composite class** (CDC + HID): `Middlewares/ST/STM32_USB_Device_Library/Class/Composite/`
 - **USB application layer** (conf, desc, CDC cmd parser, HID handler): `USB_DEVICE/App/`
 - **PWM Dashboard GUI** (Python/Tkinter test tool): `tools/pwm_dashboard.py`
-- **CubeMX config**: `Frequency_Counter.ioc`
+- **CubeMX config**: `FanTestKit.ioc`
 
 ### FreeRTOS Integration
 
@@ -176,8 +176,8 @@ After CubeMX regeneration, these changes outside USER CODE blocks must be re-app
 - All custom code lives in `/* USER CODE BEGIN/END */` sections — never edit generated code outside these markers
 - CubeMX overrides (GPIO remap, I2C address) are done in USER CODE sections after the generated init, not by modifying the `.ioc`
 - HAL callback pattern: thin IRQ handlers in `stm32f4xx_it.c` delegate to `HAL_*_IRQHandler()`, which dispatches to `HAL_*_Callback()` overrides in `main.c`
-- **INDIRECTTI polarity quirk**: With `TIM_ICSELECTION_INDIRECTTI`, the polarity bit has the opposite effect from DIRECTTI. To measure high-time duty on "rising edge" setting, CH1 must be configured for **falling** polarity and CH2 for **rising** polarity. The condition in `FreqCounter_Reconfigure()` is intentionally swapped: `EDGE_RISING` maps to `FALLING` capture polarity. Do not "fix" this — it was verified empirically.
-- `FreqCounter_Reconfigure()` in `main.c` is the single function to call when any timer parameter changes (edge, prescalers) — it stops, reconfigures, and restarts both channels
+- **INDIRECTTI polarity quirk**: With `TIM_ICSELECTION_INDIRECTTI`, the polarity bit has the opposite effect from DIRECTTI. To measure high-time duty on "rising edge" setting, CH1 must be configured for **falling** polarity and CH2 for **rising** polarity. The condition in `Capture_Reconfigure()` is intentionally swapped: `EDGE_RISING` maps to `FALLING` capture polarity. Do not "fix" this — it was verified empirically.
+- `Capture_Reconfigure()` in `main.c` is the single function to call when any timer parameter changes (edge, prescalers) — it stops, reconfigures, and restarts both channels
 - `Config_Save()` erases flash sector 7 and writes a `ConfigData_t` struct with magic number — called via I2C write 0x5A to reg 0x30
 - `Config_Load()` runs at boot before peripherals start — validates magic, applies saved settings or keeps defaults
 - `PWM_Apply()` is the single function for glitch-free PWM updates — computes PSC/ARR/CCR, writes shadow registers, forces UEV

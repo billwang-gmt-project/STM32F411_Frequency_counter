@@ -1,6 +1,6 @@
 # PROJECT_STATUS.md
 
-**Project**: STM32F411 Frequency Counter (I2C + USB CDC + USB HID)
+**Project**: STM32F411 FanTestKit (I2C + USB CDC + USB HID)
 **Last updated**: 2026-03-26 (GUI state sync on connect, checkbox refactor)
 **Branch**: `master`
 **Latest commit**: `42b12a7` — GUI 改進：連線時讀取裝置狀態、Capture/PWM 啟用改為 Checkbox
@@ -32,7 +32,7 @@
 - [x] PWM Dashboard: add device info bar (VID, PID, serial number), multi-device selection, nickname editing
 - [x] PWM Dashboard: add capture edge selector (Rising/Falling dropdown)
 - [x] PWM Dashboard: stop auto-refresh polling when capture is off
-- [x] Fix INDIRECTTI polarity bug: swap edge condition in `FreqCounter_Reconfigure()` so EDGE=0 (Rising) correctly measures high-time duty
+- [x] Fix INDIRECTTI polarity bug: swap edge condition in `Capture_Reconfigure()` so EDGE=0 (Rising) correctly measures high-time duty
 - [x] Update all documentation: CLAUDE.md, README.md, CDC_programming_guide.md, PWM_Dashboard_User_Guide.md
 - [x] PWM Dashboard: read device state on connect (capture, edge, PWM freq/duty/enable) via sequential SCPI query queue
 - [x] PWM Dashboard: refactor Capture and PWM Enable from toggle buttons to checkboxes
@@ -41,7 +41,7 @@
 
 - **`Config_Save()` runs from I2C ISR context** (priority 2): flash sector erase takes ~100ms, blocking all interrupts at priority >= 2 during that time. Consider deferring to a FreeRTOS task.
 - **CubeMX regeneration clobbers FreeRTOS handlers**: `SVC_Handler` and `PendSV_Handler` in `stm32f4xx_it.c` must be re-commented after any CubeMX code generation.
-- **INDIRECTTI polarity quirk**: With `TIM_ICSELECTION_INDIRECTTI`, the polarity bit has the opposite effect. The condition in `FreqCounter_Reconfigure()` is intentionally swapped (`EDGE_RISING` → falling capture polarity). Do not "fix" this — verified empirically.
+- **INDIRECTTI polarity quirk**: With `TIM_ICSELECTION_INDIRECTTI`, the polarity bit has the opposite effect. The condition in `Capture_Reconfigure()` is intentionally swapped (`EDGE_RISING` → falling capture polarity). Do not "fix" this — verified empirically.
 
 ## Architecture Summary
 
@@ -95,7 +95,7 @@
 1. **I2C direction naming**: STM32F4 HAL `I2C_DIRECTION_TRANSMIT` = master writes, `I2C_DIRECTION_RECEIVE` = master reads. Counterintuitive.
 2. **ISR priorities vs FreeRTOS**: TIM2 (1) and I2C (2) are above `configMAX_SYSCALL_INTERRUPT_PRIORITY` (5). They must NEVER call FreeRTOS `*FromISR()` APIs. USB OTG_FS (6) is below threshold — CAN call `*FromISR()`.
 3. **CubeMX regeneration**: Re-comment `SVC_Handler` and `PendSV_Handler` in `stm32f4xx_it.c` / `.h` after regeneration.
-4. **INDIRECTTI polarity**: The edge condition in `FreqCounter_Reconfigure()` looks backwards but is correct. `EDGE_RISING` configures CH1=Falling, CH2=Rising(indirect) to measure high-time duty. See memory note `feedback_indirectti_polarity.md`.
+4. **INDIRECTTI polarity**: The edge condition in `Capture_Reconfigure()` looks backwards but is correct. `EDGE_RISING` configures CH1=Falling, CH2=Rising(indirect) to measure high-time duty. See memory note `feedback_indirectti_polarity.md`.
 5. **ConfigData_t layout**: Changing the struct requires updating `CONFIG_MAGIC` (currently `0xDEADBEF5`). Old config with mismatched magic silently resets to defaults.
 6. **PWM staging protocol**: Writing FREQ_L, FREQ_H, DUTY only updates shadow variables. Writing CTRL commits to hardware and fires trigger on PA7.
 7. **USB composite**: CDC and HID share the register map through `regmap.c`. FreeRTOS mutex protects writes from CDC/HID tasks; I2C ISR bypasses mutex (above FreeRTOS threshold, self-serializing).
@@ -105,7 +105,7 @@
 The firmware and test GUI are fully functional. All interfaces work: frequency/duty measurement, I2C register protocol, USB CDC SCPI console, USB HID binary access, dual PWM outputs, flash persistence, device nickname.
 
 The PWM Dashboard GUI (`tools/pwm_dashboard.py`) now supports:
-- Multi-device selection with FC-411 identification by serial number
+- Multi-device selection with FanTestKit-411 identification by serial number
 - Device info display (VID, PID, serial, nickname)
 - Nickname editing (Apply/Reset)
 - Capture edge selection (Rising = high-time duty, Falling = low-time duty)

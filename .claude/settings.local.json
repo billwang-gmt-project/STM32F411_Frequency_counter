@@ -16,7 +16,7 @@
       "WebFetch(domain:github.com)",
       "Bash(gh api:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(arm-none-eabi-size \"D:/github/STM32F411_Frequency_counter/Debug/Frequency_Counter.elf\")",
+      "Bash(arm-none-eabi-size \"D:/github/STM32F411_Frequency_counter/Debug/FanTestKit.elf\")",
       "Bash(find D:/github/STM32F411_Frequency_counter/Middlewares/ST -name *.c -o -name *.h)",
       "Bash(find D:/github/STM32F411_Frequency_counter/USB_DEVICE/App -name *.c -o -name *.h)",
       "Bash(find D:/github/STM32F411_Frequency_counter/Middlewares -type f -name *.c -o -name *.h)",
@@ -27,7 +27,13 @@
       "Bash(xargs wc:*)",
       "Bash(python -c \"import py_compile; py_compile.compile\\(''tools/pwm_dashboard.py'', doraise=True\\); print\\(''Syntax OK''\\)\")",
       "Bash(python -c \"import py_compile; py_compile.compile\\(''tools/pwm_dashboard.py'', doraise=True\\)\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(grep -v \".d$\")",
+      "Bash(grep -v \".o$\")",
+      "Bash(grep -r \"Frequency\\\\|frequency\" /d/github/STM32F411_Frequency_counter --include=*.c --include=*.h --include=*.md --include=*.py)",
+      "Bash(grep:*)",
+      "Bash(git:*)",
+      "Bash(cd:*)"
     ]
   }
 }

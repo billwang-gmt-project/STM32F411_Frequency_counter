@@ -1,6 +1,6 @@
 /**
  * @file    usb_cdc_cmd.c
- * @brief   SCPI command parser for the frequency counter CDC console.
+ * @brief   SCPI command parser for the FanTestKit CDC console.
  *
  * Implements IEEE 488.2 common commands (*IDN?, *SAV, *RST) and a
  * SCPI-style subsystem hierarchy (MEASure, CAPture, SOURce, LED,

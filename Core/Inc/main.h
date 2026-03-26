@@ -58,7 +58,7 @@ void USB_EnqueueCdcRx(const uint8_t *data, uint16_t len);
 void USB_EnqueueHidRx(const uint8_t *data, uint16_t len);
 
 /* Shared functions for regmap module */
-void FreqCounter_Reconfigure(void);
+void Capture_Reconfigure(void);
 void PWM_Apply_Ext(uint8_t pwm_num);
 void Trigger_Pulse(void);
 void Config_Save(void);

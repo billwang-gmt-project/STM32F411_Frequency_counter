@@ -204,7 +204,7 @@ static QueueHandle_t hid_evt_queue = NULL;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void FreqCounter_Reconfigure(void);
+void Capture_Reconfigure(void);
 static void LED_Init(void);
 static void LED_G_Init(void);
 static void LED_R_Init(void);
@@ -303,7 +303,7 @@ int main(void)
   /* Apply loaded config if non-default */
   if (g_edge_config != EDGE_RISING || g_tim_psc != 0 || g_ic_psc != 0)
   {
-    FreqCounter_Reconfigure();
+    Capture_Reconfigure();
   }
 
   /* Apply saved PWM config if enabled */
@@ -788,7 +788,7 @@ static const uint32_t ic_psc_map[] = {
     TIM_ICPSC_DIV1, TIM_ICPSC_DIV2, TIM_ICPSC_DIV4, TIM_ICPSC_DIV8
 };
 
-void FreqCounter_Reconfigure(void)
+void Capture_Reconfigure(void)
 {
   HAL_TIM_IC_Stop_IT(&htim2, TIM_CHANNEL_1);
   HAL_TIM_IC_Stop(&htim2, TIM_CHANNEL_2);
@@ -1127,7 +1127,7 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 
   if (need_reconfig)
   {
-    FreqCounter_Reconfigure();
+    Capture_Reconfigure();
   }
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PWM Verification Dashboard for STM32F411 Frequency Counter.
+PWM Verification Dashboard for STM32F411 FanTestKit.
 
 Connects to the board via USB CDC serial, controls PWM outputs (PA8/PB6),
 and displays captured frequency/duty measurements from PA15.
@@ -58,7 +58,7 @@ RE_NICKNAME = re.compile(r'"([^"]{0,16})"')
 
 
 class ResponseParser:
-    """Parse SCPI responses from the frequency counter firmware."""
+    """Parse SCPI responses from the FanTestKit firmware."""
 
     @staticmethod
     def parse_meas_all(text):
@@ -181,7 +181,7 @@ class SerialManager:
             }
             if is_target:
                 sn_short = (p.serial_number or "?")[:8]
-                info["display"] = f"{p.device} - FC-411 [{sn_short}]"
+                info["display"] = f"{p.device} - FanTestKit-411 [{sn_short}]"
             else:
                 info["display"] = f"{p.device} - {p.description}"
             result.append(info)
@@ -525,7 +525,7 @@ class PwmDashboardApp(tk.Tk):
         )
         self._status_label.grid(row=0, column=4, padx=8, pady=4)
 
-        # --- Device info row (hidden until connected to FC-411) ---
+        # --- Device info row (hidden until connected to FanTestKit-411) ---
         self._device_info_frame = ttk.Frame(frame)
         # row=1, span all columns
         self._device_info_frame.grid(row=1, column=0, columnspan=5, sticky="ew", padx=4, pady=(0, 4))
@@ -596,7 +596,7 @@ class PwmDashboardApp(tk.Tk):
                 self._serial.connect(port)
                 self._connected_device_info = info
                 self._update_connection_status(True)
-                # show device info and query state for FC-411 devices
+                # show device info and query state for FanTestKit-411 devices
                 if info and info["is_target"]:
                     self._show_device_info(info)
                     self._query_nickname()

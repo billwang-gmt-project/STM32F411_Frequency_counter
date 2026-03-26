@@ -1,10 +1,10 @@
 # PWM Dashboard User Guide
 
-GUI tool for verifying PWM output and frequency capture on the STM32F411 Frequency Counter board. Connect a PWM output pin to the capture input pin with a jumper wire, then use the dashboard to control PWM parameters and observe captured measurements in real time.
+GUI tool for verifying PWM output and frequency capture on the STM32F411 FanTestKit board. Connect a PWM output pin to the capture input pin with a jumper wire, then use the dashboard to control PWM parameters and observe captured measurements in real time.
 
 ## Prerequisites
 
-- **Hardware**: STM32F411 Frequency Counter board with USB cable
+- **Hardware**: STM32F411 FanTestKit board with USB cable
 - **Python 3.x** with `tkinter` (included with most Python installations)
 - **pyserial**: Install with `pip install pyserial`
 
@@ -74,14 +74,14 @@ The board has two PWM outputs and one capture input:
 
 1. Plug the STM32F411 board into your PC via USB.
 2. Launch the dashboard: `python tools/pwm_dashboard.py`
-3. The **Connection** panel auto-detects FC-411 devices by VID/PID (`0x0483:0x5741`). Target devices appear first in the dropdown, labelled `COMx - FC-411 [serial]` with truncated serial numbers for easy identification.
-4. If multiple FC-411 boards are connected, select the desired device from the dropdown.
+3. The **Connection** panel auto-detects FanTestKit-411 devices by VID/PID (`0x0483:0x5741`). Target devices appear first in the dropdown, labelled `COMx - FanTestKit-411 [serial]` with truncated serial numbers for easy identification.
+4. If multiple FanTestKit-411 boards are connected, select the desired device from the dropdown.
 5. If the port is not auto-detected, click **Refresh** to rescan, or select the port manually.
-6. Click **Connect**. The status indicator turns green. For FC-411 devices, a **device info bar** appears showing VID, PID, serial number, and the current nickname. The dashboard automatically queries the device for its current state (capture on/off, edge setting, PWM1/PWM2 frequency, duty, and enable status) and updates all GUI controls to match.
+6. Click **Connect**. The status indicator turns green. For FanTestKit-411 devices, a **device info bar** appears showing VID, PID, serial number, and the current nickname. The dashboard automatically queries the device for its current state (capture on/off, edge setting, PWM1/PWM2 frequency, duty, and enable status) and updates all GUI controls to match.
 
 ### 2. Device Info and Nickname
 
-When connected to an FC-411 device, the Connection panel expands with a second row:
+When connected to an FanTestKit-411 device, the Connection panel expands with a second row:
 
 - **VID / PID**: USB vendor and product ID (read from the OS at enumeration time)
 - **SN**: Full 16-character serial number (derived from the STM32 UID)
@@ -93,7 +93,7 @@ When connected to an FC-411 device, the Connection panel expands with a second r
 3. Click **Reset** to revert the nickname to the default serial number.
 4. Use `*SAV` in the CDC console (or save via I2C/HID) to persist the nickname to flash.
 
-The device info bar is hidden when disconnected or when connected to a non-FC-411 serial device.
+The device info bar is hidden when disconnected or when connected to a non-FanTestKit-411 serial device.
 
 ### 3. Basic PWM Loopback Test
 

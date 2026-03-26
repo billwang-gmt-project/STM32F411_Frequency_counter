@@ -1,8 +1,8 @@
-# I2C Slave Programming Guide — STM32F411 Frequency Counter
+# I2C Slave Programming Guide — STM32F411 FanTestKit
 
 ## Overview
 
-The STM32F411 frequency counter provides an I2C slave interface for register-based control. A host microcontroller (Arduino, STM32, Raspberry Pi, ESP32, etc.) connects via I2C and reads measurement data, writes configuration parameters, or controls two independent PWM outputs.
+The STM32F411 FanTestKit provides an I2C slave interface for register-based control. A host microcontroller (Arduino, STM32, Raspberry Pi, ESP32, etc.) connects via I2C and reads measurement data, writes configuration parameters, or controls two independent PWM outputs.
 
 > **Note:** The device also supports USB CDC (text console) and USB HID (binary register access) interfaces. This guide covers the I2C slave interface only.
 
@@ -15,7 +15,7 @@ The STM32F411 frequency counter provides an I2C slave interface for register-bas
 ## Hardware Connection
 
 ```
-Host MCU                      STM32F411 Frequency Counter
+Host MCU                      STM32F411 FanTestKit
 ─────────                     ──────────────────────────
 I2C SDA  ──────────┬──────── PB7  (SDA)
                    ├── 4.7kΩ ── 3.3V
@@ -32,7 +32,7 @@ Trigger output ───────────── PA7  (pulse on PWM change
 - Pull-up resistors (2.2 kΩ–4.7 kΩ to 3.3 V) are required on both SDA and SCL.
 - The signal under test connects to PA15 (5 V tolerant on this pin).
 - PWM outputs (PA8, PB6) are 3.3 V push-pull. Trigger output (PA7) pulses high on each PWM apply.
-- Share a common GND between host and counter.
+- Share a common GND between host and FanTestKit.
 
 ---
 
@@ -174,15 +174,15 @@ If no edge is captured for **1 second**, all measurement registers (PERIOD, FREQ
 ```cpp
 #include <Wire.h>
 
-#define FREQ_COUNTER_ADDR 0x08
+#define FANTEST_ADDR 0x08
 
 // Read a 4-byte (uint32_t) register
 uint32_t readReg32(uint8_t reg) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.endTransmission(false);  // repeated start
 
-    Wire.requestFrom(FREQ_COUNTER_ADDR, 4);
+    Wire.requestFrom(FANTEST_ADDR, 4);
     uint32_t val = 0;
     if (Wire.available() == 4) {
         val  = (uint32_t)Wire.read();
@@ -195,11 +195,11 @@ uint32_t readReg32(uint8_t reg) {
 
 // Read a 2-byte (uint16_t) register
 uint16_t readReg16(uint8_t reg) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.endTransmission(false);
 
-    Wire.requestFrom(FREQ_COUNTER_ADDR, 2);
+    Wire.requestFrom(FANTEST_ADDR, 2);
     uint16_t val = 0;
     if (Wire.available() == 2) {
         val  = (uint16_t)Wire.read();
@@ -210,17 +210,17 @@ uint16_t readReg16(uint8_t reg) {
 
 // Read a 1-byte register
 uint8_t readReg8(uint8_t reg) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.endTransmission(false);
 
-    Wire.requestFrom(FREQ_COUNTER_ADDR, 1);
+    Wire.requestFrom(FANTEST_ADDR, 1);
     return Wire.available() ? Wire.read() : 0;
 }
 
 // Write a 1-byte register (must send 2 data bytes; slave expects 3-byte frame)
 void writeReg8(uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.write(value);
     Wire.write((uint8_t)0x00);  // padding byte — slave requires 2 data bytes
@@ -229,7 +229,7 @@ void writeReg8(uint8_t reg, uint8_t value) {
 
 // Write a 2-byte register (little-endian)
 void writeReg16(uint8_t reg, uint16_t value) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.write(value & 0xFF);
     Wire.write((value >> 8) & 0xFF);
@@ -418,7 +418,7 @@ void FC_WriteFreq(uint8_t regL, uint32_t freq_hz) {
 }
 
 // Usage example — read measurements
-void ReadFrequencyCounter(void) {
+void ReadFanTestKit(void) {
     uint32_t freq = FC_ReadReg32(0x04);
     uint32_t duty = FC_ReadReg32(0x08);
 
@@ -439,16 +439,16 @@ void SetupPWM1(void) {
 ```cpp
 #include <Wire.h>
 
-#define FREQ_COUNTER_ADDR 0x08
+#define FANTEST_ADDR 0x08
 #define SDA_PIN 21
 #define SCL_PIN 22
 
 uint32_t readReg32(uint8_t reg) {
-    Wire.beginTransmission(FREQ_COUNTER_ADDR);
+    Wire.beginTransmission(FANTEST_ADDR);
     Wire.write(reg);
     Wire.endTransmission(false);
 
-    Wire.requestFrom((uint8_t)FREQ_COUNTER_ADDR, (uint8_t)4);
+    Wire.requestFrom((uint8_t)FANTEST_ADDR, (uint8_t)4);
     uint32_t val = 0;
     for (int i = 0; i < 4 && Wire.available(); i++) {
         val |= (uint32_t)Wire.read() << (8 * i);

@@ -13,7 +13,7 @@
 
 /* Device identification */
 #define CFG_MANUFACTURER "Winstrong Technology Co., Ltd."
-#define CFG_MODEL "FC-411"
+#define CFG_MODEL "FanTestKit-411"
 
 /* Firmware version — date-encoded: 0xYYMMDDnn (BCD-ish)
  * 0x26032600 = 2026-03-26, revision 00 */
